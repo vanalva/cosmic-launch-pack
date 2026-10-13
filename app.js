@@ -1,0 +1,392 @@
+/* Cosmic launch pack: presentation site. Data from data.json (tools/site_build.py). No framework. */
+(() => {
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const COL = { blue: '#362cff', cream: '#ece9e0', ink: '#171726', sun: '#fdba31', fire: '#ef5541', pink: '#df7289', white: '#ffffff' };
+const PAINT = ['blue', 'ink', 'cream', 'sun', 'fire', 'pink'];
+let D, B; // data, boards
+const DEMO = true; // demo: every download is off until the pack is approved
+const LOCKED = 'Downloads open once the pack is approved';
+if (DEMO) document.documentElement.classList.add('demo');
+
+/* ── utilities ─────────────────────────────────────────── */
+const toastEl = $('#toast'); let toastT;
+function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('on'), 2200); }
+async function copy(text, what = 'Copied') { try { await navigator.clipboard.writeText(text); toast(`${what}`); } catch { toast('Copy not allowed here'); } }
+function saveBlob(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800); }
+function saveUrl(url, name) { const a = document.createElement('a'); a.href = url; a.download = name || ''; document.body.append(a); a.click(); a.remove(); }
+const svgCache = new Map();
+async function svgText(src) { if (!svgCache.has(src)) svgCache.set(src, fetch(src).then(r => r.text())); return svgCache.get(src); }
+function tintSvg(txt, hex) { return txt.replace(/(fill|stroke)="#[0-9a-fA-F]{6}"/g, `$1="${hex}"`); }
+const dataUrl = (txt) => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(txt);
+async function tinted(src, colour) { const t = await svgText(src); return colour ? tintSvg(t, COL[colour] || colour) : t; }
+async function svgToPng(txt, size = 1024, bg) {
+  const img = new Image(); img.src = dataUrl(txt); await img.decode();
+  const r = img.naturalWidth / img.naturalHeight || 1; const w = r >= 1 ? size : Math.round(size * r), hh = r >= 1 ? Math.round(size / r) : size;
+  const c = document.createElement('canvas'); c.width = w; c.height = hh; const x = c.getContext('2d');
+  if (bg) { x.fillStyle = bg; x.fillRect(0, 0, w, hh); } x.drawImage(img, 0, 0, w, hh);
+  return new Promise(res => c.toBlob(res, 'image/png'));
+}
+const fileName = (s) => s.replace(/[^\w\-. ]+/g, '').trim();
+const setOf = (id) => D.sets.find(s => s.id === id);
+const isStory = (b) => b.h >= 1900 && b.w < 1200;
+const avatar = () => B['profile/01-comet']?.img || '';
+const handle = 'cosmic';
+const hashSpan = (t) => esc(t).replace(/(#\w+)/g, '<span class="h">$1</span>');
+
+/* tint any <img data-tint> that points at a single-colour SVG */
+async function applyTints(root = document) {
+  for (const im of $$('img[data-tint]', root)) { const src = im.dataset.src || im.getAttribute('src'); im.dataset.src = src; im.src = dataUrl(await tinted(src, im.dataset.tint.trim())); }
+  for (const im of $$('img[data-map]', root)) { const src = im.dataset.src || im.getAttribute('src'); im.dataset.src = src; const pairs = Object.fromEntries(im.dataset.map.split(',').map(x => x.split(':').map(s => s.toLowerCase())));
+    const txt = (await svgText(src)).replace(/(fill|stroke)="(#[0-9a-fA-F]{6})"/g, (m, k, c) => `${k}="${pairs[c.toLowerCase()] || c}"`); im.src = dataUrl(txt); }
+}
+
+/* ── zips (in the browser, no duplicates on the server) ── */
+async function zipBoards(ids, name, withCaptions = true) {
+  if (DEMO) return toast(LOCKED);
+  if (!window.JSZip) return toast('Zip library did not load');
+  const z = new JSZip(); let n = 0; const lines = [];
+  toast(`Preparing ${ids.length} files…`);
+  for (const id of ids) {
+    const b = B[id]; const blob = await fetch(b.png).then(r => r.blob()); z.file(`${b.set}/${b.name}.png`, blob); n++;
+    if (withCaptions && (b.caption || b.alt)) lines.push(`${b.set}/${b.name}\n${b.caption ? 'Caption: ' + b.caption + '\n' : ''}${b.hashtags ? 'Hashtags: ' + b.hashtags + '\n' : ''}${b.alt ? 'Alt: ' + b.alt + '\n' : ''}`);
+    if (n % 10 === 0) toast(`Packing ${n} / ${ids.length}…`);
+  }
+  if (lines.length) z.file('Captions.txt', lines.join('\n'));
+  const blob = await z.generateAsync({ type: 'blob' }); saveBlob(blob, fileName(name) + '.zip'); toast('Download ready');
+}
+
+/* ── boot ─────────────────────────────────────────────── */
+fetch('data.json').then(r => r.json()).then(d => { D = d; B = d.boards; init(); });
+
+function init() {
+  hero(); phone('grid'); campaign(); library(); brand(); icons(); voice(); printSec(); mockups(); downloads();
+  applyTints(); chrome();
+}
+
+/* ── chrome: nav state, reveal ────────────────────────── */
+function chrome() {
+  const top = $('.top'); addEventListener('scroll', () => top.classList.toggle('scrolled', scrollY > 30), { passive: true });
+  const links = $$('.top-nav a'); const map = new Map(links.map(a => [a.getAttribute('href').slice(1), a]));
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { links.forEach(a => a.classList.remove('on')); map.get(e.target.id)?.classList.add('on'); } }), { rootMargin: '-45% 0px -50% 0px' });
+  $$('main > section').forEach(s => io.observe(s));
+  const rv = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); rv.unobserve(e.target); } }), { threshold: .12 });
+  $$('.sec-head, .block, .phase, .lib-set, .line-card, .pc').forEach(e => { e.classList.add('rv'); rv.observe(e); });
+  document.addEventListener('keydown', e => {
+    const open = $$('.modal:not([hidden])').pop(); if (!open) return;
+    if (e.key === 'Escape') closeModal(open);
+    if (e.key === 'ArrowRight') open._next?.(); if (e.key === 'ArrowLeft') open._prev?.();
+  });
+  $$('.modal').forEach(m => m.addEventListener('click', e => { if (e.target === m || e.target.closest('[data-close]')) closeModal(m); }));
+}
+function openModal(m) { m.hidden = false; document.body.style.overflow = 'hidden'; m.querySelector('.x')?.focus(); }
+function closeModal(m) { m.hidden = true; m._close?.(); if (!$$('.modal:not([hidden])').length) document.body.style.overflow = ''; }
+
+/* ── hero ─────────────────────────────────────────────── */
+function hero() {
+  const s = D.stats;
+  const fan = ['meet-arlo/01-cover', 'reveal/01-post', 'what-we-do/01-cover'].filter(id => B[id]);
+  $('#fan').innerHTML = fan.map(id => `<button aria-label="Open ${esc(B[id].title)}"><img src="${B[id].img}" alt="${esc(B[id].alt)}"></button>`).join('');
+  $$('#fan button').forEach((b, k) => b.addEventListener('click', () => openBoard(fan[k])));
+  $('#heroStats').innerHTML = [[s.boards, 'designs'], [s.sets, 'sets'], [s.social, 'social posts'], [s.teaserShare + '%', 'teaser'], [s.print, 'print'], [D.mockups.length, 'mockups']]
+    .map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
+}
+
+/* ── the phone ────────────────────────────────────────── */
+const IC = {
+  heart: '<svg viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="1.8"><path d="M12 20s-7-4.4-9.2-8.7C1.3 8.2 3.3 4.5 6.8 4.5c2 0 3.4 1.1 4.2 2.4.8-1.3 2.2-2.4 4.2-2.4 3.5 0 5.5 3.7 4 6.8C19 15.6 12 20 12 20z"/></svg>',
+  com: '<svg viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="1.8"><path d="M20 12a8 8 0 1 1-3.3-6.5A8 8 0 0 1 20 12zM20 20l-2.6-2.6"/></svg>',
+  send: '<svg viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="1.8"><path d="M21 3 10 14M21 3l-7 18-4-7-7-4 18-7z"/></svg>',
+  save: '<svg viewBox="0 0 24 24" fill="none" stroke="#111" stroke-width="1.8"><path d="M6 3h12v18l-6-4-6 4z"/></svg>',
+  multi: '<svg class="multi" viewBox="0 0 24 24" fill="#fff"><path d="M7 3h14v14h-2V5H7z"/><rect x="3" y="7" width="14" height="14" rx="1"/></svg>',
+};
+let phoneStory;
+function phone(view) {
+  const scr = $('#phoneScreen'); phoneStory?.stop(); scr.scrollTop = 0;
+  $$('#feed .seg-btn').forEach(b => { const on = b.dataset.view === view; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+  if (view === 'stories') { scr.innerHTML = '<div class="st"></div>'; phoneStory = storyPlayer($('.st', scr), D.stories, { loop: true, note: $('#feedHelp'), noteDefault: $('#feedHelp').dataset.def }); return; }
+  $('#feedHelp').textContent = $('#feedHelp').dataset.def || $('#feedHelp').textContent; $('#feedHelp').dataset.def = $('#feedHelp').textContent;
+  const status = `<div class="ig-status"><span>9:41</span><span>●●● 5G ▮</span></div>`;
+  if (view === 'grid') {
+    scr.innerHTML = `<div class="ig">${status}
+      <div class="ig-bar"><span>${handle} ⌄</span><span>☰</span></div>
+      <div class="ig-head"><div class="ig-av"><img src="${avatar()}" alt="Cosmic avatar"></div>
+        <div class="ig-stats"><div><b>${D.feed.length}</b>posts</div><div><b>—</b>followers</div><div><b>—</b>following</div></div></div>
+      <div class="ig-bio"><b>Cosmic</b><br>Property services. Done properly.<br>Owner-led. Austin-built. Painting · landscaping · property work.<br>Work that holds up. People who show up.</div>
+      <div class="ig-btns"><span class="b">Follow</span><span>Message</span><span>Estimate</span></div>
+      <div class="ig-hl">${D.highlights.map((x, i) => `<button data-hl="${i}" aria-label="Highlight ${esc(x.label)}"><div class="ring"><img src="${B[x.cover].img}" alt=""></div><small>${esc(x.label)}</small></button>`).join('')}</div>
+      <div class="ig-tabs"><span class="on">▦</span><span>▶</span><span>☺</span></div>
+      <div class="ig-grid">${D.feed.map((p, i) => `<button class="ig-cell" data-post="${i}" aria-label="${esc(setOf(p.set).label)}"><img loading="lazy" src="${B[p.slides[0]].img}" alt="${esc(B[p.slides[0]].alt)}">${p.slides.length > 1 ? IC.multi : ''}</button>`).join('')}</div></div>`;
+  } else {
+    scr.innerHTML = `<div class="ig">${status}<div class="ig-bar"><span style="font-family:Georgia,serif;font-style:italic">Instagram</span><span>♡ ✉</span></div>
+      ${D.feed.map((p, i) => { const b0 = B[p.slides[0]]; const s = setOf(p.set); const cap = b0.caption || s.caption || '';
+        return `<article class="ig-post"><div class="ig-post-head"><img src="${avatar()}" alt=""><div><b>${handle}</b><small>Austin, Texas</small></div></div>
+        <div class="ig-media"><div class="ig-track" data-i="${i}">${p.slides.map(id => `<img loading="lazy" src="${B[id].img}" alt="${esc(B[id].alt)}">`).join('')}</div>
+        ${p.slides.length > 1 ? `<span class="ig-count">1/${p.slides.length}</span>` : ''}</div>
+        <div class="ig-acts">${IC.heart}${IC.com}${IC.send}<span class="sv">${IC.save}</span></div>
+        ${p.slides.length > 1 ? `<div class="ig-dots">${p.slides.map((_, k) => `<i class="${k ? '' : 'on'}"></i>`).join('')}</div>` : ''}
+        <div class="ig-cap"><b>${handle}</b> ${hashSpan(cap.length > 120 ? cap.slice(0, 120) + '…' : cap)}</div>
+        <button class="ig-more" data-post="${i}">View post and files</button></article>`; }).join('')}</div>`;
+    $$('.ig-track', scr).forEach(tr => tr.addEventListener('scroll', () => {
+      const k = Math.round(tr.scrollLeft / tr.clientWidth), art = tr.closest('.ig-post');
+      $$('.ig-dots i', art).forEach((d, j) => d.classList.toggle('on', j === k)); const c = $('.ig-count', art); if (c) c.textContent = `${k + 1}/${tr.children.length}`;
+    }, { passive: true }));
+  }
+  $$('[data-post]', scr).forEach(b => b.addEventListener('click', () => { const p = D.feed[+b.dataset.post]; openPost(p.slides, 0); }));
+  $$('[data-hl]', scr).forEach(b => b.addEventListener('click', () => { const x = D.highlights[+b.dataset.hl]; openStories(x.stories.length ? x.stories : [x.cover]); }));
+}
+$$('#feed .seg-btn').forEach(b => b.addEventListener('click', () => phone(b.dataset.view)));
+
+/* ── story player (inline in the phone, or in the modal) ── */
+function storyPlayer(host, ids, { loop = false, onEnd, note, noteDefault } = {}) {
+  const DUR = 5500; let i = 0, t0 = 0, paused = false, raf, elapsed = 0, dead = false;
+  host.innerHTML = `<div class="st-bars">${ids.map(() => '<i><b></b></i>').join('')}</div>
+    <div class="st-who"><img src="${avatar()}" alt=""><span>${handle}</span></div><img class="st-img" alt="">
+    <button class="st-tap l" aria-label="Previous story"></button><button class="st-tap r" aria-label="Next story"></button>`;
+  const bars = $$('.st-bars b', host), img = $('.st-img', host);
+  function show(k) {
+    i = k; elapsed = 0; t0 = performance.now(); const b = B[ids[i]]; img.src = b.img; img.alt = b.alt || b.title;
+    bars.forEach((x, j) => x.style.width = j < i ? '100%' : '0%');
+    if (note) note.textContent = b.note ? `Sticker: ${b.note.replace(/^(Link )?[Ss]ticker:\s*/, '')}` : (b.caption || b.title || '');
+  }
+  function next() { if (i < ids.length - 1) show(i + 1); else if (loop) show(0); else { stop(); onEnd?.(); } }
+  function prev() { show(Math.max(0, i - 1)); }
+  function tick(now) { if (dead) return; if (!paused) { elapsed = now - t0; bars[i].style.width = Math.min(100, elapsed / DUR * 100) + '%'; if (elapsed >= DUR) next(); } else t0 = now - elapsed; raf = requestAnimationFrame(tick); }
+  function stop() { dead = true; cancelAnimationFrame(raf); if (note && noteDefault) note.textContent = noteDefault; }
+  $('.st-tap.l', host).addEventListener('click', prev); $('.st-tap.r', host).addEventListener('click', next);
+  host.addEventListener('pointerdown', () => paused = true); host.addEventListener('pointerup', () => paused = false); host.addEventListener('pointerleave', () => paused = false);
+  show(0); raf = requestAnimationFrame(tick);
+  return { stop, next, prev };
+}
+let modalStory;
+function openStories(ids, start = 0) {
+  const m = $('#storyModal'); openModal(m); const list = ids.slice(start).concat(ids.slice(0, start));
+  $('#storyScreen').innerHTML = '<div class="st"></div>';
+  modalStory = storyPlayer($('#storyScreen .st'), list, { onEnd: () => closeModal(m), note: $('#storyNote') });
+  m._next = () => modalStory.next(); m._prev = () => modalStory.prev(); m._close = () => modalStory.stop();
+}
+
+/* ── post viewer ──────────────────────────────────────── */
+function openPost(ids, start = 0) {
+  const m = $('#postModal'); let i = start; const b0 = B[ids[0]]; const s = setOf(b0.set);
+  const slides = $('#pmSlides'), dots = $('#pmDots');
+  function render() {
+    const b = B[ids[i]]; slides.innerHTML = `<img src="${b.img}" alt="${esc(b.alt || b.title)}">`;
+    dots.innerHTML = ids.length > 1 ? ids.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('') : '';
+    $('#pmPrev').disabled = i === 0; $('#pmNext').disabled = i === ids.length - 1;
+    const cap = b.caption || s.caption || '', tags = b.hashtags || s.hashtags || '';
+    $('#pmSide').innerHTML = `<p class="label">${esc(s.label)} · ${esc(s.channel)}${ids.length > 1 ? ` · ${i + 1} / ${ids.length}` : ''}</p>
+      <h3 class="caps">${esc(ids.length > 1 && s.sequence ? s.label : b.title)}</h3>
+      ${b.note ? `<div class="note">${esc(b.note)}</div>` : ''}
+      ${cap ? `<p class="cap">${esc(cap)}</p>` : ''}${tags ? `<p class="h">${esc(tags)}</p>` : ''}
+      ${b.alt ? `<details><summary>Alt text</summary><p>${esc(b.alt)}</p></details>` : ''}
+      <div class="dls">
+        ${cap ? `<button class="btn btn-line btn-s" data-copy>Copy caption</button>` : ''}
+        <a class="btn btn-blue btn-s" href="${b.png}" download="${esc(b.name)}.png">Download this ${isStory(b) ? 'story' : 'design'} · PNG ${b.w}×${b.h}</a>
+        ${ids.length > 1 ? `<button class="btn btn-line btn-s" data-zip>All ${ids.length} slides · ZIP</button>` : ''}
+        ${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}
+      </div>`;
+    $('[data-copy]', m)?.addEventListener('click', () => copy(`${cap}\n\n${tags}`.trim(), 'Caption copied'));
+    $('[data-zip]', m)?.addEventListener('click', () => zipBoards(ids, `Cosmic - ${s.label}`));
+  }
+  m._next = () => { if (i < ids.length - 1) { i++; render(); } }; m._prev = () => { if (i > 0) { i--; render(); } };
+  $('#pmNext').onclick = m._next; $('#pmPrev').onclick = m._prev;
+  let x0 = null; slides.onpointerdown = e => x0 = e.clientX; slides.onpointerup = e => { if (x0 === null) return; const dx = e.clientX - x0; if (Math.abs(dx) > 40) (dx < 0 ? m._next : m._prev)(); x0 = null; };
+  render(); openModal(m);
+}
+function openBoard(id) { const b = B[id]; const s = setOf(b.set); const list = s.boards; const k = list.indexOf(id);
+  if (isStory(b) && (s.kind === 'stories' || s.kind === 'mixed')) return openStories(list.filter(x => isStory(B[x])), Math.max(0, list.filter(x => isStory(B[x])).indexOf(id)));
+  openPost(s.kind === 'carousel' || s.sequence ? list : [id], s.kind === 'carousel' || s.sequence ? k : 0); }
+
+/* ── campaign ─────────────────────────────────────────── */
+function campaign() {
+  const t = D.stats.teaserShare;
+  $('#campaignLead').textContent = `${t}% of the social posts tease, introduce the characters and reveal the new brand. The rest introduces Cosmic, one website section at a time.`;
+  $('#share').innerHTML = `<div class="a" style="flex:${t}">Tease · meet · reveal ${t}%</div><div class="b" style="flex:${100 - t}">Introduce · keep going ${100 - t}%</div>`;
+  $('#phases').innerHTML = D.campaign.map((p, n) => `<li class="phase"><p class="label">Phase ${n + 1} · ${esc(p.phase)}</p><h3 class="caps">${esc(p.title)}</h3><p>${esc(p.text)}</p>
+    <div class="phase-items">${p.items.map((it, k) => { const s = setOf(it.set); const id = it.board || s.boards[0]; const many = it.board ? 0 : s.boards.length;
+      return `<button data-p="${n}" data-k="${k}" aria-label="${esc(s.label)}"><img loading="lazy" src="${B[id].img}" alt="">${many > 1 ? `<span class="badge">${many}</span>` : ''}</button>`; }).join('')}</div></li>`).join('');
+  $$('#phases [data-p]').forEach(b => b.addEventListener('click', () => { const it = D.campaign[+b.dataset.p].items[+b.dataset.k]; const s = setOf(it.set);
+    if (it.board) return openBoard(it.board); if (s.kind === 'stories') return openStories(s.boards); openPost(s.boards, 0); }));
+}
+
+/* ── library ──────────────────────────────────────────── */
+let libChan = 'All', libView = 'sets';
+function library() {
+  const chans = ['All', ...new Set(D.sets.map(s => s.channel))];
+  $('#libChips').innerHTML = chans.map(c => `<button class="chip${c === libChan ? ' on' : ''}" data-c="${c}">${c}<small>${c === 'All' ? D.stats.boards : D.sets.filter(s => s.channel === c).reduce((a, s) => a + s.boards.length, 0)}</small></button>`).join('');
+  $$('#libChips .chip').forEach(b => b.addEventListener('click', () => { libChan = b.dataset.c; library(); }));
+  $$('[data-lib]').forEach(b => b.onclick = () => { libView = b.dataset.lib; $$('[data-lib]').forEach(x => x.classList.toggle('on', x === b)); renderLib(); });
+  $('#libSearch').oninput = renderLib; renderLib();
+}
+function cardHtml(id, hgt) {
+  const b = B[id]; const w = Math.min(Math.round(hgt * b.w / b.h), 760);
+  return `<div class="card" style="width:${libView === 'sets' ? w + 'px' : 'auto'}"><button class="im" data-open="${id}" style="${libView === 'sets' ? `height:${hgt}px;width:${w}px` : ''};border:0;padding:0;display:block;width:100%" aria-label="Open ${esc(b.title)}">
+    <img loading="lazy" src="${b.img}" alt="${esc(b.alt || b.title)}"></button>
+    <div class="cap"><span>${esc(b.title)}</span><a class="dl" href="${b.png}" download="${esc(b.name)}.png" aria-label="Download PNG">PNG</a></div></div>`;
+}
+function renderLib() {
+  const q = $('#libSearch').value.trim().toLowerCase();
+  const match = id => { const b = B[id]; return !q || `${b.title} ${b.caption} ${b.alt} ${setOf(b.set).label}`.toLowerCase().includes(q); };
+  const sets = D.sets.filter(s => libChan === 'All' || s.channel === libChan);
+  const body = $('#library-body');
+  if (libView === 'grid') {
+    const ids = sets.flatMap(s => s.boards).filter(match);
+    body.innerHTML = ids.length ? `<div class="grid-all">${ids.map(id => cardHtml(id, 300)).join('')}</div>` : '<p class="empty">Nothing matches that search.</p>';
+  } else {
+    const html = sets.map(s => { const ids = s.boards.filter(match); if (!ids.length) return '';
+      const hg = s.kind === 'banners' ? 210 : s.kind === 'email' ? 520 : s.kind === 'print' ? 300 : 330;
+      return `<div class="lib-set"><div class="lib-set-head"><div><p class="label">${esc(s.channel)} · ${ids.length} design${ids.length > 1 ? 's' : ''}</p><h3 class="caps">${esc(s.label)}</h3>${s.intro || s.sub ? `<p>${esc(s.intro || s.sub)}</p>` : ''}</div>
+        <div class="meta"><button class="btn btn-blue btn-s" data-zipset="${s.id}">Download set · ZIP</button>${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>
+        <div class="strip">${ids.map(id => cardHtml(id, hg)).join('')}</div></div>`; }).join('');
+    body.innerHTML = html || '<p class="empty">Nothing matches that search.</p>';
+  }
+  $$('[data-open]', body).forEach(b => b.addEventListener('click', () => openBoard(b.dataset.open)));
+  $$('[data-zipset]', body).forEach(b => b.addEventListener('click', () => { const s = setOf(b.dataset.zipset); zipBoards(s.boards, `Cosmic - ${s.label}`); }));
+}
+
+/* ── brand ────────────────────────────────────────────── */
+function paintRow(host, current, onPick, list = PAINT) {
+  host.innerHTML = list.map(c => `<button class="dot${c === current ? ' on' : ''}" data-c="${c}" style="background:${COL[c]}" aria-label="${c}" title="${c}"></button>`).join('');
+  $$('.dot', host).forEach(b => b.addEventListener('click', () => { $$('.dot', host).forEach(x => x.classList.toggle('on', x === b)); onPick(b.dataset.c); }));
+}
+const groundFor = c => c === 'cream' ? COL.blue : c === 'sun' || c === 'pink' ? COL.ink : COL.cream;
+async function downloadArt(item, colour, png = false, bg) {
+  if (DEMO) return toast(LOCKED);
+  const txt = item.mono && colour ? await tinted(item.src, colour) : await svgText(item.src);
+  if (png) saveBlob(await svgToPng(txt, 1600, bg), `cosmic-${item.name}${colour ? '-' + colour : ''}.png`);
+  else saveBlob(new Blob([txt], { type: 'image/svg+xml' }), `cosmic-${item.name}${colour ? '-' + colour : ''}.svg`);
+  toast(`Downloaded ${item.label || item.name}`);
+}
+function brand() {
+  const L = Object.fromEntries(D.brand.logos.map(l => [l.name, l]));
+  const logoCards = [['cosmic-comet', 'cream', 'g-blue', 'Comet wordmark · on blue'], ['cosmic-comet', 'blue', 'g-cream', 'Comet wordmark · on cream'],
+    ['cosmic-comet', 'cream', 'g-ink', 'Comet wordmark · on ink'], ['cosmic-burst', 'blue', 'g-cream', 'Burst wordmark'],
+    ['cosmic-arlo-mark', 'cream', 'g-blue', 'Arlo mark · stacked'], ['arlo-curl', 'ink', 'g-sun', 'Arlo curl · avatar, stickers']].filter(x => L[x[0]]);
+  $('#logos').innerHTML = logoCards.map(([n, c, g, l], k) => `<button class="logo-card ${g}" data-k="${k}"><img data-tint="${c}" src="${L[n].src}" alt="${esc(l)}"><div class="row"><span>${l}</span><span>SVG ↓</span></div></button>`).join('');
+  $$('#logos .logo-card').forEach(b => b.addEventListener('click', e => { const [n, c] = logoCards[+b.dataset.k]; downloadArt(L[n], c, e.shiftKey, e.shiftKey ? null : undefined); }));
+  // colour
+  $('#swatches').innerHTML = D.brand.palette.map(p => `<button class="sw" style="background:${p.hex};color:${p.ink}${p.hex === '#ECE9E0' ? ';box-shadow:inset 0 0 0 3px #171726' : ''}" data-hex="${p.hex}"><b>${p.name}</b><span>${p.hex} · ${p.role}</span></button>`).join('');
+  $$('#swatches .sw').forEach(b => b.addEventListener('click', () => copy(b.dataset.hex, `${b.dataset.hex} copied`)));
+  $('#usage').innerHTML = D.brand.palette.map(p => `<div style="flex:${p.share};background:${p.hex}" title="${p.name}"></div>`).join('');
+  // type
+  const ts = $('#typeSample'); const upd = () => { ts.style.fontWeight = $('#tw').value; ts.style.fontSize = $('#ts').value + 'px'; };
+  $('#tw').oninput = upd; $('#ts').oninput = upd; upd();
+  $$('#tcase .seg-btn').forEach(b => b.onclick = () => { $$('#tcase .seg-btn').forEach(x => x.classList.toggle('on', x === b)); ts.style.textTransform = b.dataset.case; });
+  // lettering
+  const letters = D.brand.lettering.filter(l => !/^(join-2|at-a-working|hero-lockup)$/.test(l.name));
+  $('#lettering').innerHTML = letters.map((l, k) => `<button class="tile" data-k="${k}" title="${esc(l.label)}"><img ${l.mono ? 'data-tint="blue"' : ''} src="${l.src}" alt="${esc(l.label)}"><span class="nm">${esc(l.label)}</span></button>`).join('');
+  $$('#lettering .tile').forEach(b => b.addEventListener('click', e => downloadArt(letters[+b.dataset.k], 'blue', e.shiftKey)));
+  // Arlo
+  const poses = D.brand.arlo.filter(a => a.mono); let arloC = 'blue';
+  const drawArlo = async () => { $('#arloPoses').innerHTML = poses.map((a, k) => `<button class="tile" data-k="${k}" style="background:${groundFor(arloC)}"><img data-tint="${arloC}" src="${a.src}" alt="Arlo pose ${k + 1}"></button>`).join('');
+    $$('#arloPoses .tile').forEach(b => b.addEventListener('click', e => downloadArt(poses[+b.dataset.k], arloC, e.shiftKey))); applyTints($('#arloPoses')); };
+  paintRow($('#arloPaint'), arloC, c => { arloC = c; drawArlo(); }); drawArlo();
+  // Cosmo
+  const cos = D.brand.cosmo.filter(c => !/^cosmo-(07|08|11|18|walk-arlo)$/.test(c.name));
+  $('#cosmoGrid').innerHTML = cos.map((c, k) => `<button class="tile" data-k="${k}"><img loading="lazy" src="${c.src}" alt="Cosmo illustration"></button>`).join('');
+  $$('#cosmoGrid .tile').forEach(b => b.addEventListener('click', e => downloadArt(cos[+b.dataset.k], null, e.shiftKey)));
+  // stickers
+  const st = D.brand.stickers.filter(s => !/^shape-/.test(s.name) && s.ar > 0.4); let stC = 'ink';
+  const drawSt = () => { $('#stickers').innerHTML = st.map((s, k) => `<button class="tile" data-k="${k}" style="background:${groundFor(stC)}"><img ${s.mono ? `data-tint="${stC}"` : ''} loading="lazy" src="${s.src}" alt="${esc(s.label)}"></button>`).join('');
+    $$('#stickers .tile').forEach(b => b.addEventListener('click', e => downloadArt(st[+b.dataset.k], stC, e.shiftKey))); applyTints($('#stickers')); };
+  paintRow($('#stickerPaint'), stC, c => { stC = c; drawSt(); }, ['ink', 'blue', 'cream']); drawSt();
+  // highlight covers
+  $('#hlCovers').innerHTML = D.highlights.map((x, i) => `<button data-i="${i}"><div class="ring"><img src="${B[x.cover].img}" alt=""></div><small>${esc(x.label)}</small></button>`).join('');
+  $$('#hlCovers button').forEach(b => b.addEventListener('click', () => { const x = D.highlights[+b.dataset.i]; openStories(x.stories.length ? x.stories : [x.cover]); }));
+}
+
+/* ── icons ────────────────────────────────────────────── */
+function icons() {
+  const all = D.brand.icons; let cat = 'All', ic = 'blue', gr = 'cream';
+  const catOf = n => n.startsWith('iso') ? 'Isometric' : n.startsWith('austin') ? 'Austin' : 'Interface';
+  const cats = ['All', 'Isometric', 'Austin', 'Interface'];
+  const chips = () => { $('#iconCats').innerHTML = cats.map(c => `<button class="chip${c === cat ? ' on' : ''}" data-c="${c}">${c}<small>${c === 'All' ? all.length : all.filter(i => catOf(i.name) === c).length}</small></button>`).join('');
+    $$('#iconCats .chip').forEach(b => b.onclick = () => { cat = b.dataset.c; chips(); draw(); }); };
+  async function draw() {
+    const q = $('#iconSearch').value.trim().toLowerCase();
+    const list = all.filter(i => (cat === 'All' || catOf(i.name) === cat) && (!q || i.label.includes(q) || i.name.includes(q)));
+    $('#iconGrid').innerHTML = list.length ? list.map(i => `<button class="ico" data-n="${i.name}" style="background:${COL[gr]};color:${gr === 'cream' || gr === 'white' ? COL.ink : COL.cream}" title="${esc(i.label)}"><img ${i.mono ? `data-tint="${ic}"` : ''} src="${i.src}" alt="${esc(i.label)}"><span>${esc(i.label)}</span></button>`).join('') : '<p class="empty">No icon by that name. Try "roller", "house" or "texas".</p>';
+    $$('#iconGrid .ico').forEach(b => b.addEventListener('click', e => { const it = all.find(x => x.name === b.dataset.n); downloadArt(it, ic, e.shiftKey); }));
+    applyTints($('#iconGrid'));
+  }
+  chips(); paintRow($('#iconPaint'), ic, c => { ic = c; draw(); });
+  paintRow($('#iconGround'), gr, c => { gr = c; draw(); }, ['cream', 'blue', 'ink', 'white']);
+  $('#iconSize').oninput = e => $('#iconGrid').style.setProperty('--is', e.target.value + 'px');
+  $('#iconSearch').oninput = draw; draw();
+}
+
+/* ── voice ────────────────────────────────────────────── */
+function voice() {
+  const lines = [['Work that holds up. People who show up.', 'The promise'], ['Property services. Done properly.', 'The line under the name'],
+    ['Same places. Different standard.', 'The reveal'], ['Get a clear estimate.', 'The one call to action'],
+    ['Give a damn. Know your craft. Leave it better.', 'The mantra (check with the client before using in public)'],
+    ['Good work should keep working for you.', 'The Club'], ['No surprises. Do it properly. Leave it better. See it through.', 'Clarity · Craft · Care · Commit'],
+    ['Owner-led. Austin-built. Here for the long haul.', 'Who we are'], ['Do it yourself. Do it properly.', 'DIY']];
+  $('#lines').innerHTML = lines.map(([l, s]) => `<button class="line-card" data-l="${esc(l)}"><p>${esc(l)}</p><small>${esc(s)} · click to copy</small></button>`).join('');
+  $$('#lines .line-card').forEach(b => b.addEventListener('click', () => copy(b.dataset.l, 'Line copied')));
+  const tags = new Map();
+  Object.values(B).forEach(b => (b.hashtags || '').split(/\s+/).filter(t => t.startsWith('#')).forEach(t => tags.set(t, (tags.get(t) || 0) + 1)));
+  D.sets.forEach(s => (s.hashtags || '').split(/\s+/).filter(t => t.startsWith('#')).forEach(t => tags.set(t, (tags.get(t) || 0) + 3)));
+  $('#tags').innerHTML = [...tags].sort((a, b) => b[1] - a[1]).map(([t]) => `<button class="tag">${esc(t)}</button>`).join('');
+  $$('#tags .tag').forEach(b => b.addEventListener('click', () => copy(b.textContent, `${b.textContent} copied`)));
+  const sets = D.sets.filter(s => ['feed-singles', 'carousel', 'mixed', 'stories'].includes(s.kind));
+  $('#captions').innerHTML = sets.map(s => { const rows = s.kind === 'carousel' && s.caption ? [{ id: s.boards[0], cap: s.caption, tags: s.hashtags }]
+      : s.boards.map(id => ({ id, cap: B[id].caption || (B[id].note ? 'Story · ' + B[id].note : ''), tags: B[id].hashtags || s.hashtags })).filter(r => r.cap);
+    if (!rows.length) return '';
+    return `<details class="cap-item"><summary>${esc(s.label)} <span class="label" style="color:inherit;opacity:.6">${rows.length} caption${rows.length > 1 ? 's' : ''}</span></summary>${rows.map(r => `<div class="cap-row"><img loading="lazy" src="${B[r.id].img}" alt=""><div><p>${esc(r.cap)}</p>${r.tags ? `<p class="h">${esc(r.tags)}</p>` : ''}</div><button class="btn btn-s" data-cap="${esc(r.cap + (r.tags ? '\n\n' + r.tags : ''))}">Copy</button></div>`).join('')}</details>`; }).join('');
+  $$('#captions [data-cap]').forEach(b => b.addEventListener('click', () => copy(b.dataset.cap, 'Caption copied')));
+}
+
+/* ── print ────────────────────────────────────────────── */
+function printSec() {
+  const P = setOf('print'); if (!P) return;
+  const NAMES = { 'hanger-estimate': ['Door hanger · Estimate', '4.25 × 11 in'], 'hanger-notice': ['Door hanger · Neighbor notice', '4.25 × 11 in'],
+    'postcard-eddm': ['Postcard · Every-door mail', '9 × 6 in'], 'postcard-neighbor': ['Postcard · Neighbor', '6 × 4 in'], 'yard-sign-done': ['Yard sign · Job done', '24 × 18 in'],
+    'yard-sign-wip': ['Yard sign · Work in progress', '24 × 18 in'], 'flyer': ['Flyer', '8.5 × 11 in'], 'thank-you': ['Thank-you card', '5 × 7 in'],
+    'referral-card': ['Referral card', '3.5 × 2 in'], 'letter-rebrand': ['Rebrand letter', 'US letter'], 'business-card': ['Business cards', '3.5 × 2 in'] };
+  const groups = new Map();
+  P.boards.forEach(id => { const n = B[id].name.replace(/^\d+-/, ''); const key = Object.keys(NAMES).find(k => n.startsWith(k)) || n; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(id); });
+  const side = id => (/-front/.test(id) ? 0 : /-back/.test(id) ? 1 : 0); // fronts first within a piece
+  groups.forEach(ids => ids.sort((x, y) => side(x) - side(y) || x.localeCompare(y)));
+  $('#printGrid').innerHTML = [...groups].map(([k, ids], g) => { const [t, sz] = NAMES[k] || [k, '']; const f = B[ids[0]];
+    return `<button class="pc" data-g="${g}"><div class="pc-in"><div class="pc-face pc-front"><img loading="lazy" src="${f.img}" alt="${esc(t)}"></div>${ids.length > 1 ? `<div class="pc-face pc-back"><img alt=""></div>` : ''}</div>
+      <div class="pc-meta"><b>${esc(t)}</b><span>${esc(sz)}</span></div>${ids.length > 1 ? `<div class="pc-hint">Click to flip · ${ids.length} sides</div>` : ''}</button>`; }).join('');
+  const G = [...groups.values()];
+  $$('#printGrid .pc').forEach(btn => { const ids = G[+btn.dataset.g]; if (ids.length < 2) { btn.onclick = () => openPost(ids, 0); return; }
+    let i = 0, flipped = false; const front = $('.pc-front img', btn), back = $('.pc-back img', btn);
+    const fit = () => { const b = B[ids[0]]; $('.pc-in', btn).style.aspectRatio = `${b.w} / ${b.h}`; }; fit();
+    btn.onclick = () => { const nx = (i + 1) % ids.length; (flipped ? front : back).src = B[ids[nx]].img; flipped = !flipped; btn.classList.toggle('flip', flipped); i = nx; }; });
+}
+
+/* ── mockups ──────────────────────────────────────────── */
+function mockups() {
+  const M = D.mockups;
+  $('#mockGrid').innerHTML = M.map((m, i) => `<button data-i="${i}"><img loading="lazy" src="${m.img}" alt="${esc(m.title)}"><span>${esc(m.title)}</span></button>`).join('');
+  $$('#mockGrid button').forEach(b => b.addEventListener('click', () => lightbox(M.map(m => ({ src: m.img, full: m.full, cap: m.title })), +b.dataset.i)));
+}
+function lightbox(items, i) {
+  const m = $('#lightbox'); const show = () => { $('#lbImg').src = items[i].src; $('#lbImg').alt = items[i].cap; $('#lbCap').innerHTML = `${esc(items[i].cap)}`;
+    $('#lbPrev').disabled = i === 0; $('#lbNext').disabled = i === items.length - 1; };
+  m._next = () => { if (i < items.length - 1) { i++; show(); } }; m._prev = () => { if (i > 0) { i--; show(); } };
+  $('#lbNext').onclick = m._next; $('#lbPrev').onclick = m._prev; show(); openModal(m);
+}
+
+/* ── downloads ────────────────────────────────────────── */
+function downloads() {
+  const social = D.sets.filter(s => ['feed-singles', 'carousel', 'mixed', 'stories', 'highlights', 'avatars'].includes(s.kind)).flatMap(s => s.boards);
+  const t = $('#dlTable');
+  t.innerHTML = `<div class="dl-all"><button class="btn btn-blue" data-all="social">All social designs · ZIP (${social.length})</button>
+    <button class="btn btn-line" data-all="print">All print designs · ZIP (${setOf('print').boards.length})</button>
+    <button class="btn btn-line" data-all="icons">Icon kit · SVG ZIP (${D.brand.icons.length})</button>
+    <a class="btn btn-line" href="${D.repo}/releases/tag/v1" target="_blank" rel="noopener">All Illustrator files</a></div>` +
+    D.sets.map(s => `<div class="dl-row"><img loading="lazy" src="${B[s.boards[0]].img}" alt=""><div><b>${esc(s.label)}</b><small>${esc(s.channel)} · ${s.boards.length} design${s.boards.length > 1 ? 's' : ''}</small></div>
+      <small>${esc(s.sub || '')}</small><div class="row"><button class="btn btn-blue btn-s" data-zipset="${s.id}">PNG · ZIP</button>${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>`).join('');
+  $$('[data-zipset]', t).forEach(b => b.addEventListener('click', () => { const s = setOf(b.dataset.zipset); zipBoards(s.boards, `Cosmic - ${s.label}`); }));
+  $('[data-all="social"]', t).onclick = () => zipBoards(social, 'Cosmic - Social designs');
+  $('[data-all="print"]', t).onclick = () => zipBoards(setOf('print').boards, 'Cosmic - Print designs', false);
+  $('[data-all="icons"]', t).onclick = async () => { const z = new JSZip(); for (const i of D.brand.icons) z.file(`${i.name}.svg`, await svgText(i.src)); saveBlob(await z.generateAsync({ type: 'blob' }), 'Cosmic - Icon kit.zip'); toast('Icon kit ready'); };
+}
+})();
