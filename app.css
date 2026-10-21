@@ -447,14 +447,44 @@ h4.caps { font-size: 22px; }
   .top-nav a { padding: 6px 10px; font-size: 13px; }
 }
 
-/* demo: downloads hidden (files are not published) */
-.demo a[download], .demo [data-zip], .demo [data-zipset], .demo [data-all], .demo .card .dl, .demo .post-side .dls a,
-.demo .lib-set-head .meta, .demo #downloads, .demo .top-cta, .demo .top-nav a[href="#downloads"], .demo .dl-hint,
-.demo .logo-card .row span:last-child, .demo .post-side .dls a[target] { display: none !important; }
-.demo .lb-fig figcaption a { display: none; }
 .lb-faces[hidden] { display: none; }
 
 /* expand icons: hover / keyboard focus only; none on touch (a tap opens the preview) */
 .zoom, .zoom-btn { opacity: 0; transition: opacity .2s, background .15s, color .15s; }
 .pc-wrap:hover .zoom, .co-media:hover .zoom, .mail:hover .zoom-btn, .zoom:focus-visible, .zoom-btn:focus-visible { opacity: 1; }
 @media (hover: none) { .zoom, .zoom-btn { display: none; } }
+
+/* ── downloads, copy SVG ── */
+.tacts { position: absolute; left: 6px; right: 6px; bottom: 6px; display: flex; gap: 4px; justify-content: center; opacity: 0; transition: opacity .15s; z-index: 2; }
+.tile:hover .tacts, .ico:hover .tacts, .tile:focus-within .tacts, .ico:focus-within .tacts { opacity: 1; }
+.tact { font: 700 11px/1 inherit; font-family: inherit; padding: 6px 9px; border-radius: 999px; background: var(--ink); color: var(--cream); cursor: pointer; white-space: nowrap; }
+.tact:hover, .tact:focus-visible { background: var(--blue); }
+.ico { position: relative; } .ico .tacts { bottom: 4px; }
+.tile .nm { transition: opacity .15s; } .tile:hover .nm { opacity: 0; }
+.logo-card .row { align-items: center; } .logo-card .tacts { position: static; opacity: 1; flex-shrink: 0; }
+.logo-card .tact { background: rgba(23, 23, 38, .85); color: #ece9e0; }
+@media (hover: none) { .tile .tacts, .ico .tacts { display: none; } }
+.lb-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.lb-actions:empty { display: none; }
+.lb-actions .btn-line { color: var(--cream); border-color: var(--cream); } .lb-actions .btn-line:hover { background: var(--cream); color: var(--blue); }
+.badge-bar { margin-bottom: 14px; }
+.badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.badges .tile { min-height: 200px; } .badges .tile img { max-height: 150px; }
+.um-dl { margin-top: 64px; padding-top: 40px; border-top: 3px solid var(--blue); }
+.um-dl-head { display: flex; gap: 24px; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+.um-dl-head h3 { font-size: clamp(26px, 3vw, 40px); margin: 6px 0 8px; color: var(--blue); } .um-dl-head p:not(.label) { margin: 0; max-width: 62ch; color: var(--mute); }
+.vg { margin-top: 34px; } .vg-head { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; margin-bottom: 14px; } .vg-head h4 { margin: 0; font-size: 20px; } .vg-head p { margin: 0; color: var(--mute); font-size: 14px; }
+.vgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.vc { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.vc-im { border: 0; border-radius: 14px; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; padding: 14px; cursor: zoom-in; }
+.vc-im img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.vc b { font-size: 13px; text-transform: capitalize; overflow-wrap: anywhere; }
+.vc-acts { display: flex; flex-direction: column; gap: 6px; } .vv { display: flex; gap: 6px; flex-wrap: wrap; }
+.vv .btn { padding: 7px 12px; font-size: 12px; border-width: 2px; } .vcopy { background: var(--cream); color: var(--blue); border: 2px solid var(--blue); cursor: pointer; font-family: inherit; }
+.vcopy:hover { background: var(--blue); color: var(--cream); }
+.co-top, .print-dl { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; } .print-dl { margin: 0 0 22px; }
+.co-dl { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+
+body:has(#lightbox:not([hidden])) .toast { bottom: auto; top: 22px; transform: translate(-50%, -120px); z-index: 300; }
+body:has(#lightbox:not([hidden])) .toast.on { transform: translate(-50%, 0); }
+@media (max-width: 560px) { .vgrid, .badges { grid-template-columns: repeat(2, minmax(0, 1fr)); } .vc-im { padding: 8px; } }

@@ -7,7 +7,7 @@ const esc = (s = '') => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': 
 const COL = { blue: '#362cff', cream: '#ece9e0', ink: '#171726', sun: '#fdba31', fire: '#ef5541', pink: '#df7289', white: '#ffffff' };
 const PAINT = ['blue', 'ink', 'cream', 'sun', 'fire', 'pink'];
 let D, B; // data, boards
-const DEMO = true; // demo: every download is off until the pack is approved
+const DEMO = false; // true hides every download (review mode)
 const LOCKED = 'Downloads open once the pack is approved';
 if (DEMO) document.documentElement.classList.add('demo');
 
@@ -30,6 +30,29 @@ async function svgToPng(txt, size = 1024, bg) {
   return new Promise(res => c.toBlob(res, 'image/png'));
 }
 const fileName = (s) => s.replace(/[^\w\-. ]+/g, '').trim();
+/* make an SVG self-contained: every relative href (image, use) becomes a data: URL */
+async function inlineRefs(txt, base) {
+  const refs = [...new Set([...txt.matchAll(/(?:xlink:)?href="(?!#|data:|https?:)([^"]+)"/g)].map(m => m[1]))];
+  for (const r of refs) { try { const res = await fetch(new URL(r, new URL(base || '.', location.href))); const blob = await res.blob();
+    const url = await new Promise(ok => { const f = new FileReader(); f.onload = () => ok(f.result); f.readAsDataURL(blob); }); txt = txt.split(`"${r}"`).join(`"${url}"`); } catch {} }
+  return txt;
+}
+/* copy SVG markup so it pastes as vectors (Figma, Illustrator, Canva); plain text as the fallback */
+async function copySvg(txt, base) {
+  txt = await inlineRefs(txt, base); let done = false;
+  try { if (window.ClipboardItem && navigator.clipboard.write && (!ClipboardItem.supports || ClipboardItem.supports('image/svg+xml'))) {
+    await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([txt], { type: 'text/plain' }), 'image/svg+xml': new Blob([txt], { type: 'image/svg+xml' }) })]); done = true; } } catch {}
+  if (!done) { try { await navigator.clipboard.writeText(txt); done = true; } catch {} }
+  toast(done ? 'SVG copied — paste into Figma, Illustrator or Canva' : 'Copy not allowed here');
+}
+/* a zip of files fetched from the site: entries are [path-in-zip, href] */
+async function zipFiles(entries, name, extra) {
+  if (!window.JSZip) return toast('Zip library did not load');
+  const z = new JSZip(); toast(`Preparing ${entries.length} files…`);
+  for (const [path, href] of entries) z.file(path, await fetch(href).then(r => r.blob()));
+  if (extra) Object.entries(extra).forEach(([k, v]) => z.file(k, v));
+  saveBlob(await z.generateAsync({ type: 'blob' }), fileName(name) + '.zip'); toast('Download ready');
+}
 const setOf = (id) => D.sets.find(s => s.id === id);
 const isStory = (b) => b.h >= 1900 && b.w < 1200;
 const avatar = () => B['profile/01-comet']?.img || '';
@@ -258,22 +281,30 @@ function paintRow(host, current, onPick, list = PAINT) {
   $$('.dot', host).forEach(b => b.addEventListener('click', () => { $$('.dot', host).forEach(x => x.classList.toggle('on', x === b)); onPick(b.dataset.c); }));
 }
 const groundFor = c => c === 'cream' ? COL.blue : c === 'sun' || c === 'pink' ? COL.ink : COL.cream;
+const artText = (item, colour) => item.mono && colour ? tinted(item.src, colour) : svgText(item.src);
 async function downloadArt(item, colour, png = false, bg) {
   if (DEMO) return toast(LOCKED);
-  const txt = item.mono && colour ? await tinted(item.src, colour) : await svgText(item.src);
-  if (png) saveBlob(await svgToPng(txt, 1600, bg), `cosmic-${item.name}${colour ? '-' + colour : ''}.png`);
-  else saveBlob(new Blob([txt], { type: 'image/svg+xml' }), `cosmic-${item.name}${colour ? '-' + colour : ''}.svg`);
+  const txt = await artText(item, colour); const nm = `${/^cosmic-/.test(item.name) ? '' : 'cosmic-'}${item.name}${colour && item.mono ? '-' + colour : ''}`;
+  if (png) saveBlob(await svgToPng(txt, 1600, bg), `${nm}.png`);
+  else saveBlob(new Blob([txt], { type: 'image/svg+xml' }), `${nm}.svg`);
   toast(`Downloaded ${item.label || item.name}`);
+}
+/* hover actions on a tile or card: Copy SVG + SVG download, without opening the preview */
+function tileActs(btn, item, colour, host) {
+  const box = h(`<span class="tacts"><span class="tact" role="button" tabindex="0" data-a="copy">Copy SVG</span><span class="tact" role="button" tabindex="0" data-a="dl">SVG ↓</span></span>`);
+  const run = (a, e) => { e.stopPropagation(); e.preventDefault(); a === 'copy' ? artText(item, colour).then(t => copySvg(t, item.src)) : downloadArt(item, colour); };
+  $$('.tact', box).forEach(t => { t.addEventListener('click', e => run(t.dataset.a, e)); t.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') run(t.dataset.a, e); }); });
+  (host || btn).append(box);
 }
 function brand() {
   const L = Object.fromEntries(D.brand.logos.map(l => [l.name, l]));
   const logoCards = [['cosmic-comet', 'cream', 'g-blue', 'Comet wordmark · on blue'], ['cosmic-comet', 'blue', 'g-cream', 'Comet wordmark · on cream'],
     ['cosmic-comet', 'cream', 'g-ink', 'Comet wordmark · on ink'], ['cosmic-burst', 'blue', 'g-cream', 'Burst wordmark'],
     ['cosmic-arlo-mark', 'cream', 'g-blue', 'Arlo mark · stacked'], ['arlo-curl', 'ink', 'g-sun', 'Arlo curl · avatar, stickers']].filter(x => L[x[0]]);
-  $('#logos').innerHTML = logoCards.map(([n, c, g, l], k) => `<button class="logo-card ${g}" data-k="${k}"><img data-tint="${c}" src="${L[n].src}" alt="${esc(l)}"><div class="row"><span>${l}</span><span>SVG ↓</span></div></button>`).join('');
+  $('#logos').innerHTML = logoCards.map(([n, c, g, l], k) => `<button class="logo-card ${g}" data-k="${k}"><img data-tint="${c}" src="${L[n].src}" alt="${esc(l)}"><div class="row"><span>${l}</span><span class="ra"></span></div></button>`).join('');
   const GR = { 'g-blue': 'blue', 'g-cream': 'cream', 'g-ink': 'ink', 'g-sun': 'sun' };
   const logoItems = logoCards.map(([n, c, g, l]) => artItem(L[n], c, GR[g], l, 'Logo'));
-  $$('#logos .logo-card').forEach(b => b.addEventListener('click', e => { const [n, c] = logoCards[+b.dataset.k]; if (!DEMO && e.shiftKey) return downloadArt(L[n], c, true); lightbox(logoItems, +b.dataset.k, b); }));
+  $$('#logos .logo-card').forEach(b => { const [n, c] = logoCards[+b.dataset.k]; tileActs(b, L[n], c, $('.ra', b)); b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(L[n], c, true); lightbox(logoItems, +b.dataset.k, b); }); });
   // colour
   $('#swatches').innerHTML = D.brand.palette.map(p => `<button class="sw" style="background:${p.hex};color:${p.ink}${p.hex === '#ECE9E0' ? ';box-shadow:inset 0 0 0 3px #171726' : ''}" data-hex="${p.hex}"><b>${p.name}</b><span>${p.hex} · ${p.role}</span></button>`).join('');
   $$('#swatches .sw').forEach(b => b.addEventListener('click', () => copy(b.dataset.hex, `${b.dataset.hex} copied`)));
@@ -286,25 +317,36 @@ function brand() {
   const letters = D.brand.lettering.filter(l => !/^(join-2|at-a-working|hero-lockup)$/.test(l.name));
   $('#lettering').innerHTML = letters.map((l, k) => `<button class="tile" data-k="${k}" title="${esc(l.label)}"><img ${l.mono ? 'data-tint="blue"' : ''} src="${l.src}" alt="${esc(l.label)}"><span class="nm">${esc(l.label)}</span></button>`).join('');
   const letterItems = letters.map(l => artItem(l, 'blue', 'cream', l.label, 'Lettering'));
-  $$('#lettering .tile').forEach(b => b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(letters[+b.dataset.k], 'blue', true); lightbox(letterItems, +b.dataset.k, b); }));
+  $$('#lettering .tile').forEach(b => { tileActs(b, letters[+b.dataset.k], 'blue'); b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(letters[+b.dataset.k], 'blue', true); lightbox(letterItems, +b.dataset.k, b); }); });
   // Arlo
   const poses = D.brand.arlo.filter(a => a.mono); let arloC = 'blue';
   const drawArlo = async () => { $('#arloPoses').innerHTML = poses.map((a, k) => `<button class="tile" data-k="${k}" style="background:${groundFor(arloC)}"><img data-tint="${arloC}" src="${a.src}" alt="Arlo pose ${k + 1}"></button>`).join('');
-    $$('#arloPoses .tile').forEach(b => b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(poses[+b.dataset.k], arloC, true); lightbox(poses.map((a, k) => artItem(a, arloC, groundFor(arloC), `Arlo, pose ${k + 1}`, 'Character')), +b.dataset.k, b); })); applyTints($('#arloPoses')); };
+    $$('#arloPoses .tile').forEach(b => { tileActs(b, poses[+b.dataset.k], arloC); b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(poses[+b.dataset.k], arloC, true); lightbox(poses.map((a, k) => artItem(a, arloC, groundFor(arloC), `Arlo, pose ${k + 1}`, 'Character')), +b.dataset.k, b); }); }); applyTints($('#arloPoses')); };
   paintRow($('#arloPaint'), arloC, c => { arloC = c; drawArlo(); }); drawArlo();
   // Cosmo
   const cos = D.brand.cosmo.filter(c => !/^cosmo-(07|08|11|18|walk-arlo)$/.test(c.name));
   $('#cosmoGrid').innerHTML = cos.map((c, k) => `<button class="tile" data-k="${k}"><img loading="lazy" src="${c.src}" alt="Cosmo illustration"></button>`).join('');
   const cosItems = cos.map((c, k) => artItem(c, null, 'cream', `Cosmo, scene ${k + 1}`, 'Guest character'));
-  $$('#cosmoGrid .tile').forEach(b => b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(cos[+b.dataset.k], null, true); lightbox(cosItems, +b.dataset.k, b); }));
+  $$('#cosmoGrid .tile').forEach(b => { tileActs(b, cos[+b.dataset.k], null); b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(cos[+b.dataset.k], null, true); lightbox(cosItems, +b.dataset.k, b); }); });
   // stickers
   const st = D.brand.stickers.filter(s => !/^shape-/.test(s.name) && s.ar > 0.4); let stC = 'ink';
   const drawSt = () => { $('#stickers').innerHTML = st.map((s, k) => `<button class="tile" data-k="${k}" style="background:${groundFor(stC)}"><img ${s.mono ? `data-tint="${stC}"` : ''} loading="lazy" src="${s.src}" alt="${esc(s.label)}"></button>`).join('');
-    $$('#stickers .tile').forEach(b => b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(st[+b.dataset.k], stC, true); lightbox(st.map(s => artItem(s, stC, groundFor(stC), s.label, 'Sticker')), +b.dataset.k, b); })); applyTints($('#stickers')); };
+    $$('#stickers .tile').forEach(b => { tileActs(b, st[+b.dataset.k], stC); b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(st[+b.dataset.k], stC, true); lightbox(st.map(s => artItem(s, stC, groundFor(stC), s.label, 'Sticker')), +b.dataset.k, b); }); }); applyTints($('#stickers')); };
   paintRow($('#stickerPaint'), stC, c => { stC = c; drawSt(); }, ['ink', 'blue', 'cream']); drawSt();
   // highlight covers
   $('#hlCovers').innerHTML = D.highlights.map((x, i) => `<button data-i="${i}"><div class="ring"><img src="${B[x.cover].img}" alt=""></div><small>${esc(x.label)}</small></button>`).join('');
   $$('#hlCovers button').forEach(b => b.addEventListener('click', () => { const x = D.highlights[+b.dataset.i]; openStories(x.stories.length ? x.stories : [x.cover]); }));
+  badges();
+}
+/* Good Neighbor Club badge: each variant as its own SVG (colours are already in the files) */
+const groundOf = n => /cream|white/.test(n) ? COL.blue : COL.cream;
+const vecItem = (a, line) => ({ ...artItem({ src: a.href, mono: false, ar: a.ar, name: a.name }, null, null, a.label, line), ground: groundOf(a.name) });
+function badges() {
+  const list = D.badges || []; const host = $('#badges'); if (!host) return;
+  host.innerHTML = list.map((a, k) => `<button class="tile" data-k="${k}" style="background:${groundOf(a.name)}"><img loading="lazy" src="${a.href}" alt="${esc(a.label)}"><span class="nm" style="color:${/cream|white/.test(a.name) ? COL.cream : ''}">${esc(a.label)}</span></button>`).join('');
+  const items = list.map(a => vecItem(a, 'Good Neighbor Club badge'));
+  $$('#badges .tile').forEach(b => { const a = list[+b.dataset.k]; tileActs(b, { src: a.href, name: a.name, mono: false, label: a.label }, null); b.addEventListener('click', () => lightbox(items, +b.dataset.k, b)); });
+  $('#badgeZip').onclick = () => zipFiles(list.map(a => [a.file, a.href]), 'Cosmic - Good Neighbor Club badges');
 }
 
 /* ── icons ────────────────────────────────────────────── */
@@ -318,8 +360,8 @@ function icons() {
     const q = $('#iconSearch').value.trim().toLowerCase();
     const list = all.filter(i => (cat === 'All' || catOf(i.name) === cat) && (!q || i.label.includes(q) || i.name.includes(q)));
     $('#iconGrid').innerHTML = list.length ? list.map(i => `<button class="ico" data-n="${i.name}" style="background:${COL[gr]};color:${gr === 'cream' || gr === 'white' ? COL.ink : COL.cream}" title="${esc(i.label)}"><img ${i.mono ? `data-tint="${ic}"` : ''} src="${i.src}" alt="${esc(i.label)}"><span>${esc(i.label)}</span></button>`).join('') : '<p class="empty">No icon by that name. Try "roller", "house" or "texas".</p>';
-    $$('#iconGrid .ico').forEach(b => b.addEventListener('click', e => { const it = all.find(x => x.name === b.dataset.n); if (!DEMO && e.shiftKey) return downloadArt(it, ic, true);
-      lightbox(list.map(x => artItem(x, ic, gr, x.label, 'Icon')), list.indexOf(it), b); }));
+    $$('#iconGrid .ico').forEach(b => { const it = all.find(x => x.name === b.dataset.n); tileActs(b, it, ic); b.addEventListener('click', e => { if (!DEMO && e.shiftKey) return downloadArt(it, ic, true);
+      lightbox(list.map(x => artItem(x, ic, gr, x.label, 'Icon')), list.indexOf(it), b); }); });
     applyTints($('#iconGrid'));
   }
   chips(); paintRow($('#iconPaint'), ic, c => { ic = c; draw(); });
@@ -365,7 +407,7 @@ function printSec() {
   groups.forEach(ids => ids.sort((x, y) => side(x) - side(y) || x.localeCompare(y)));
   const faceLabel = id => { const mm = B[id].name.match(/-(front|back)(?:-(\w+))?$/); return mm ? (mm[1] === 'front' ? 'Front' : 'Back') + (mm[2] ? ' · ' + mm[2][0].toUpperCase() + mm[2].slice(1) : '') : 'Side'; };
   const G = [...groups.values()], T = [...groups.keys()].map(k => NAMES[k] || [k, '']);
-  const pItems = G.map((ids, g) => ({ title: T[g][0], line: T[g][1], src: big(B[ids[0]]), w: B[ids[0]].w, h: B[ids[0]].h, faces: ids.length > 1 ? ids.map(id => ({ label: faceLabel(id), src: big(B[id]) })) : null }));
+  const pItems = G.map((ids, g) => ({ title: T[g][0], line: T[g][1], src: big(B[ids[0]]), w: B[ids[0]].w, h: B[ids[0]].h, dl: dlOf(B[ids[0]]), faces: ids.length > 1 ? ids.map(id => ({ label: faceLabel(id), src: big(B[id]), dl: dlOf(B[id]) })) : null }));
   $('#printGrid').innerHTML = [...groups].map(([k, ids], g) => { const [t, sz] = NAMES[k] || [k, '']; const f = B[ids[0]];
     return `<div class="pc-wrap"><button class="pc" data-g="${g}"><div class="pc-in"><div class="pc-face pc-front"><img loading="lazy" src="${f.img}" alt="${esc(t)}"></div>${ids.length > 1 ? `<div class="pc-face pc-back"><img alt=""></div>` : ''}</div>
       <div class="pc-meta"><b>${esc(t)}</b><span>${esc(sz)}</span></div>${ids.length > 1 ? `<div class="pc-hint">Click to flip · ${ids.length} sides</div>` : '<div class="pc-hint">Click to enlarge</div>'}</button>
@@ -375,6 +417,8 @@ function printSec() {
     let i = 0, flipped = false; const front = $('.pc-front img', btn), back = $('.pc-back img', btn);
     const fit = () => { const b = B[ids[0]]; $('.pc-in', btn).style.aspectRatio = `${b.w} / ${b.h}`; }; fit();
     btn.onclick = () => { if (touchOnly()) return lightbox(pItems, +btn.dataset.g, btn); const nx = (i + 1) % ids.length; (flipped ? front : back).src = B[ids[nx]].img; flipped = !flipped; btn.classList.toggle('flip', flipped); i = nx; }; });
+  const pd = $('#printDl'); if (pd) { pd.innerHTML = `<button class="btn btn-blue btn-s" data-pz>All print pieces · PNG ZIP (${P.boards.length})</button>${P.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}`;
+    $('[data-pz]', pd).onclick = () => zipBoards(P.boards, 'Cosmic - Print', false); }
   cardOptions();
 }
 
@@ -382,22 +426,27 @@ function printSec() {
 function cardOptions() {
   const C = D.cardOptions, root = $('#cardOptions'); if (!C || !root) return;
   const cur = C.current, bd = id => B[id];
-  const all = [{ ...cur, front: { img: bd(cur.front.id).img, w: bd(cur.front.id).w, h: bd(cur.front.id).h }, backs: cur.backs.map(k => ({ label: k.label, img: bd(k.id).img })) }, ...C.options];
+  const all = [{ ...cur, front: { img: bd(cur.front.id).img, w: bd(cur.front.id).w, h: bd(cur.front.id).h, png: bd(cur.front.id).png, name: bd(cur.front.id).name }, backs: cur.backs.map(k => ({ label: k.label, img: bd(k.id).img, png: bd(k.id).png, name: bd(k.id).name })) }, ...C.options];
+  const optZip = all.flatMap(o => [[`${o.letter}/${o.front.name}.png`, o.front.png], ...o.backs.map(k => [`${o.letter}/${k.name}.png`, k.png])]);
   root.innerHTML = `<div class="co-head"><p class="label">Business card options</p><h3 class="caps">More ways to hand over a name</h3>
-    <p class="lead">The current card, then ${C.options.length} directions to compare. Click a card to flip it; on hover the expand icon opens a big preview (on touch, tap a card). The toggle switches the back between Carlos and Roberto.</p></div>
+    <p class="lead">The current card, then ${C.options.length} directions to compare. Click a card to flip it; on hover the expand icon opens a big preview (on touch, tap a card). The toggle switches the back between Carlos and Roberto.</p>
+    <div class="co-top"><button class="btn btn-blue btn-s" id="coZip">All card options · PNG ZIP (${optZip.length})</button>${(C.downloads || []).map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>
     <div class="co-grid">${all.map((o, n) => { const tall = o.front.h > o.front.w;
       return `<article class="co${n === 0 ? ' co-cur' : ''}" data-n="${n}"><div class="co-media"><button class="pc co-flip${tall ? ' tall' : ''}" style="aspect-ratio:${o.front.w} / ${o.front.h}" aria-label="Flip ${esc(o.name)}"><div class="pc-in">
         <div class="pc-face pc-front"><img loading="lazy" src="${o.front.img}" alt="${esc(o.name)}, front"></div><div class="pc-face pc-back"><img loading="lazy" src="${o.backs[0].img}" alt="${esc(o.name)}, back"></div></div></button>
 <button class="zoom" data-n="${n}" aria-label="Enlarge ${esc(n === 0 ? 'the current card' : o.name)}, front and backs">⤢</button></div>
         <div class="pc-meta"><b>${n === 0 ? 'Current' : esc(o.letter) + ' · ' + esc(o.name)}</b><span>${esc(o.size)}</span></div>
         <p class="co-note">${esc(o.note)}</p>
-        <div class="seg seg-s" role="group" aria-label="Back">${o.backs.map((k, i) => `<button class="seg-btn${i ? '' : ' on'}" data-b="${i}">${esc(k.label)}</button>`).join('')}</div></article>`; }).join('')}</div>`;
-  const cItems = all.map((o, n) => ({ title: n === 0 ? 'Current business card' : `${o.letter} · ${o.name}`, line: o.note, src: o.front.img, w: o.front.w, h: o.front.h,
-    faces: [{ label: 'Front', src: o.front.img }, ...o.backs.map(k => ({ label: 'Back · ' + k.label, src: k.img }))] }));
+        <div class="seg seg-s" role="group" aria-label="Back">${o.backs.map((k, i) => `<button class="seg-btn${i ? '' : ' on'}" data-b="${i}">${esc(k.label)}</button>`).join('')}</div>
+        <div class="co-dl"><a class="btn btn-line btn-s" data-df href="${o.front.png}" download="${esc(o.front.name)}.png">Front · PNG</a><a class="btn btn-line btn-s" data-db href="${o.backs[0].png}" download="${esc(o.backs[0].name)}.png">Back · ${esc(o.backs[0].label)} · PNG</a></div></article>`; }).join('')}</div>`;
+  const pdl = k => ({ href: k.png, name: `${k.name}.png`, label: 'PNG' });
+  const cItems = all.map((o, n) => ({ title: n === 0 ? 'Current business card' : `${o.letter} · ${o.name}`, line: o.note, src: o.front.png, w: o.front.w, h: o.front.h, dl: pdl(o.front),
+    faces: [{ label: 'Front', src: o.front.png, dl: pdl(o.front) }, ...o.backs.map(k => ({ label: 'Back · ' + k.label, src: k.png, dl: pdl(k) }))] }));
+  $('#coZip', root).onclick = () => zipFiles(optZip, 'Cosmic - Business card options');
   $$('.co .zoom', root).forEach(z => z.addEventListener('click', () => lightbox(cItems, +z.dataset.n, z)));
   $$('.co', root).forEach(el => { const o = all[+el.dataset.n], card = $('.co-flip', el), back = $('.pc-back img', el);
     card.onclick = () => { if (touchOnly()) lightbox(cItems, +el.dataset.n, card); else card.classList.toggle('flip'); };
-    $$('.seg-btn', el).forEach(b => b.onclick = () => { $$('.seg-btn', el).forEach(x => x.classList.toggle('on', x === b)); back.src = o.backs[+b.dataset.b].img; card.classList.add('flip'); }); });
+    $$('.seg-btn', el).forEach(b => b.onclick = () => { $$('.seg-btn', el).forEach(x => x.classList.toggle('on', x === b)); const k = o.backs[+b.dataset.b]; back.src = k.img; card.classList.add('flip'); const a = $('[data-db]', el); a.href = k.png; a.download = `${k.name}.png`; a.textContent = `Back · ${k.label} · PNG`; }); });
 }
 
 /* ── rebrand launch: the email as a mail preview, two swipeable carousels ── */
@@ -408,7 +457,7 @@ function rebrand() {
     <div class="mail-head"><p class="label">Subject</p><b>${esc(S.email.subject)}</b><p class="label">Preheader</p><p>${esc(S.email.preheader)}</p>
       <small>From Cosmic · To: customers · [TBC: LAUNCH DATE]</small></div>
     <div class="mail-body" tabindex="0" aria-label="Email, scroll to read"><img src="${em.img}" alt="${esc(em.alt)}" width="${em.w}" height="${em.h}"></div>`;
-  const mailOpen = () => lightbox([{ title: 'Announcement email', line: `Subject: ${S.email.subject}`, src: em.img, w: em.w, h: em.h, scroll: true }], 0, $('#mailZoom'));
+  const mailOpen = () => lightbox([{ title: 'Announcement email', line: `Subject: ${S.email.subject}`, src: big(em), w: em.w, h: em.h, scroll: true, dl: dlOf(em) }], 0, $('#mailZoom'));
   $('#mailZoom').onclick = mailOpen; const mi = $('#rbMail .mail-body img'); mi.style.cursor = 'zoom-in'; mi.onclick = mailOpen;
   $('#rbCars').innerHTML = S.carousels.map(k => { const ids = S.boards.filter(id => B[id].group === k.key), b0 = B[ids[0]];
     return `<article class="rb-car" data-k="${k.key}"><div class="rb-car-media"><div class="rb-track">${ids.map((id, i) => `<button data-i="${i}" aria-label="Open slide ${i + 1} of ${ids.length}"><img loading="lazy" src="${B[id].img}" alt="${esc(B[id].alt)}"></button>`).join('')}</div>
@@ -429,33 +478,49 @@ function rebrand() {
 }
 
 /* ── uniform & patches: seven boards, the patch sheet first and widest ── */
-const merchItem = id => ({ title: B[id].title, line: B[id].line, src: big(B[id]), w: B[id].w, h: B[id].h });
+const merchItem = id => ({ title: B[id].title, line: B[id].line, src: big(B[id]), w: B[id].w, h: B[id].h, dl: dlOf(B[id]) });
 function uniform() {
   const S = setOf('merch'); if (!S) return;
   $('#umGrid').innerHTML = S.boards.map((id, i) => { const b = B[id];
     return `<button class="um${i ? '' : ' um-wide'}" data-i="${i}" aria-label="Open ${esc(b.title)} full size"><span class="um-im"><img loading="lazy" src="${b.img}" alt="${esc(b.alt)}" width="${b.w}" height="${b.h}"></span>
       <span class="um-meta"><b>${esc(b.title)}</b><span>${esc(b.line)}</span></span></button>`; }).join('');
   $$('#umGrid .um').forEach(b => b.addEventListener('click', () => lightbox(S.boards.map(merchItem), +b.dataset.i, b)));
+  uniformDl();
+}
+/* the uniform's own vectors (patches in blue and navy, chest block, painting lockup, flats, layouts): download, copy, ZIP */
+function uniformDl() {
+  const U = D.uniform, host = $('#umDl'); if (!U || !host) return;
+  const vars = f => (f.variants || [{ colour: '', href: f.href, file: f.file, ar: f.ar }]).map(v => ({ ...v, name: v.file.replace(/\.svg$/, ''), label: f.label + (v.colour ? ' · ' + v.colour : '') }));
+  const all = U.flatMap(g => g.files.flatMap(f => vars(f).map(v => [`${g.key}/${v.file}`, v.href])));
+  host.innerHTML = `<div class="um-dl-head"><div><p class="label">Vector files</p><h3 class="caps">Download the artwork</h3><p>Every file is a clean SVG: patches, the chest block, the painting lockup, the garment flats and the layouts. Open one for a big preview, copy it to paste into Figma, Illustrator or Canva, or take the lot.</p></div>
+    <button class="btn btn-blue" id="umZip">All uniform vectors · ZIP (${all.length})</button></div>` +
+    U.map((g, gi) => { let n = 0; return `<div class="vg"><div class="vg-head"><h4 class="caps">${esc(g.title)}</h4><p>${esc(g.note)}</p></div><div class="vgrid">` + g.files.map(f => { const vs = vars(f), at = n; n += vs.length;
+      return `<div class="vc"><button class="vc-im" data-g="${gi}" data-k="${at}" style="background:${groundOf(vs[0].name)}" aria-label="Preview ${esc(f.label)}"><img loading="lazy" src="${vs[0].href}" alt="${esc(f.label)}"></button><b>${esc(f.label)}</b>
+        <div class="vc-acts">${vs.map(v => `<span class="vv"><a class="btn btn-line btn-s" href="${v.href}" download="${esc(v.file)}">${v.colour ? esc(v.colour) + ' SVG' : 'SVG'} ↓</a><button class="btn btn-s vcopy" data-href="${v.href}">${v.colour ? 'Copy ' + esc(v.colour) : 'Copy SVG'}</button></span>`).join('')}</div></div>`; }).join('') + `</div></div>`; }).join('');
+  $$('#umDl .vc-im').forEach(b => { const g = U[+b.dataset.g]; const items = g.files.flatMap(f => vars(f)).map(v => vecItem(v, g.title)); b.addEventListener('click', () => lightbox(items, +b.dataset.k, b)); });
+  $$('#umDl .vcopy').forEach(b => b.addEventListener('click', async () => copySvg(await svgText(b.dataset.href), b.dataset.href)));
+  $('#umZip').onclick = () => zipFiles(all, 'Cosmic - Uniform vectors');
 }
 
 /* ── mockups ──────────────────────────────────────────── */
 function mockups() {
   const M = D.mockups;
   $('#mockGrid').innerHTML = M.map((m, i) => `<button data-i="${i}"><img loading="lazy" src="${m.img}" alt="${esc(m.title)}"><span>${esc(m.title)}</span></button>`).join('');
-  $$('#mockGrid button').forEach(b => b.addEventListener('click', () => lightbox(M.map(m => ({ title: m.title, line: 'Mockup', src: m.img, w: m.w, h: m.h })), +b.dataset.i, b)));
+  $$('#mockGrid button').forEach(b => b.addEventListener('click', () => lightbox(M.map(m => ({ title: m.title, line: 'Mockup', src: m.full || m.img, w: m.w, h: m.h, dl: { href: m.full || m.img, name: `cosmic-${m.name}.jpg`, label: 'JPG' } })), +b.dataset.i, b)));
 }
 /* ── the one shared lightbox: raster or SVG art, faces (front/back), scroll mode, keys, swipe, focus trap ── */
-const big = b => b.img; // demo: the published repo carries display webp only, never the full-size PNGs
-const boardItem = id => { const b = B[id]; return { title: b.title, line: setOf(b.set).label, src: big(b), w: b.w, h: b.h }; };
-const artItem = (a, colour, ground, title, line) => ({ title, line, art: { src: a.src, colour, mono: a.mono, ar: a.ar || 1 }, ground: COL[ground] || ground });
+const big = b => (!b.nodl && b.w > 1100 ? b.png : b.img); // wide boards preview from the full PNG
+const dlOf = b => b.nodl ? null : { href: b.png, name: `${b.name}.png`, label: 'PNG' };
+const boardItem = id => { const b = B[id]; return { title: b.title, line: setOf(b.set).label, src: big(b), w: b.w, h: b.h, dl: dlOf(b) }; };
+const artItem = (a, colour, ground, title, line) => ({ title, line, art: { src: a.src, colour, mono: a.mono, ar: a.ar || 1, name: a.name, label: title }, ground: COL[ground] || ground });
 let lbTok = 0;
 const touchOnly = () => matchMedia('(hover: none)').matches;
 async function lightbox(items, i, opener) {
   const m = $('#lightbox'), img = $('#lbImg'), stage = $('#lbStage'), faces = $('#lbFaces'), fig = $('.lb-fig', m); const trigger = opener || document.activeElement;
   const fit = (it, w, h, ar) => { // size the picture to the viewport; small art may grow up to 2.4x
     const narrow = innerWidth < 700, pad = it.art ? Math.round(Math.min(innerWidth, innerHeight) * .05) : 0;
-    const bw = innerWidth * (narrow ? .94 : .86) - pad * 2, bh = innerHeight - (narrow ? 215 : 150) - pad * 2;
-    if (it.scroll) { stage.style.maxHeight = (innerHeight - (narrow ? 200 : 130)) + 'px'; img.style.width = Math.min(760, innerWidth * .94 - 24) + 'px'; return; }
+    const bw = innerWidth * (narrow ? .94 : .86) - pad * 2, bh = innerHeight - (narrow ? 270 : 200) - pad * 2;
+    if (it.scroll) { stage.style.maxHeight = (innerHeight - (narrow ? 255 : 180)) + 'px'; img.style.width = Math.min(760, innerWidth * .94 - 24) + 'px'; return; }
     stage.style.maxHeight = ''; const r = ar || (w && h ? w / h : 0);
     if (!r) { img.style.width = ''; return; }
     let pw = Math.min(bw, bh * r); if (w && !it.art) pw = Math.min(pw, w * 2.4); img.style.width = Math.round(pw) + 'px';
@@ -468,10 +533,24 @@ async function lightbox(items, i, opener) {
     img.alt = it.title; img.draggable = false; fit(it, it.w, it.h, it.art?.ar); img.src = src;
     faces.hidden = !(it.faces && it.faces.length > 1);
     faces.innerHTML = faces.hidden ? '' : it.faces.map((x, k) => `<button class="seg-btn${k ? '' : ' on'}" data-f="${k}">${esc(x.label)}</button>`).join('');
-    $$('.seg-btn', faces).forEach(b => b.onclick = () => { $$('.seg-btn', faces).forEach(x => x.classList.toggle('on', x === b)); const fc = it.faces[+b.dataset.f]; img.src = fc.src; img.alt = `${it.title}, ${fc.label}`; });
+    $$('.seg-btn', faces).forEach(b => b.onclick = () => { $$('.seg-btn', faces).forEach(x => x.classList.toggle('on', x === b)); const fc = it.faces[+b.dataset.f]; img.src = fc.src; img.alt = `${it.title}, ${fc.label}`; acts(it, +b.dataset.f); });
     $('#lbTitle').textContent = it.title; $('#lbLine').textContent = [it.line, items.length > 1 ? `${i + 1} / ${items.length}` : ''].filter(Boolean).join(' · ');
-    $('#lbNote').textContent = DEMO && it.art ? LOCKED : '';
+    $('#lbNote').textContent = ''; acts(it, 0);
     $('#lbPrev').disabled = i === 0; $('#lbNext').disabled = i === items.length - 1; stage.scrollTop = 0;
+  }
+  /* Download (PNG / SVG / JPG) and Copy SVG for the item on show; the Download follows the side picked */
+  function acts(it, face) {
+    const box = $('#lbActions'); if (DEMO) { box.innerHTML = ''; return; }
+    if (it.art) {
+      const a = it.art; box.innerHTML = `<button class="btn btn-cream btn-s" data-a="copy">Copy SVG</button><button class="btn btn-line btn-s" data-a="svg">Download SVG</button><button class="btn btn-line btn-s" data-a="png">Download PNG</button>`;
+      const item = { src: a.src, mono: a.mono, name: a.name || 'art', label: a.label };
+      $('[data-a=copy]', box).onclick = async () => copySvg(await artText(item, a.colour), a.src);
+      $('[data-a=svg]', box).onclick = () => downloadArt(item, a.colour); $('[data-a=png]', box).onclick = () => downloadArt(item, a.colour, true);
+    } else {
+      const d = it.faces ? (it.faces[face].dl || it.dl) : it.dl;
+      const nm = d && it.faces ? d.name.replace(/(\.\w+)$/, '') : '';
+      box.innerHTML = d ? `<a class="btn btn-cream btn-s" href="${d.href}" download="${esc(d.name)}">Download ${d.label || 'PNG'}${it.faces ? ' · ' + esc(it.faces[face].label) : ''}</a>` : '';
+    }
   }
   const rs = () => { const it = items[i]; fit(it, it.w, it.h, it.art?.ar); };
   m._next = () => { if (i < items.length - 1) { i++; show(); } }; m._prev = () => { if (i > 0) { i--; show(); } };
@@ -488,9 +567,17 @@ function downloads() {
   t.innerHTML = `<div class="dl-all"><button class="btn btn-blue" data-all="social">All social designs · ZIP (${social.length})</button>
     <button class="btn btn-line" data-all="print">All print designs · ZIP (${setOf('print').boards.length})</button>
     <button class="btn btn-line" data-all="icons">Icon kit · SVG ZIP (${D.brand.icons.length})</button>
-    <a class="btn btn-line" href="${D.repo}/releases/tag/v1" target="_blank" rel="noopener">All Illustrator files</a></div>` +
+    <button class="btn btn-line" data-all="uniform">Uniform vectors · SVG ZIP</button>
+    <button class="btn btn-line" data-all="badges">Club badges · SVG ZIP</button>
+    <a class="btn btn-line" href="${D.repo}/releases/tag/v2" target="_blank" rel="noopener">All Illustrator files</a></div>` +
     D.sets.filter(s => !s.nodl).map(s => `<div class="dl-row"><img loading="lazy" src="${B[s.boards[0]].img}" alt=""><div><b>${esc(s.label)}</b><small>${esc(s.channel)} · ${s.boards.length} design${s.boards.length > 1 ? 's' : ''}</small></div>
-      <small>${esc(s.sub || '')}</small><div class="row"><button class="btn btn-blue btn-s" data-zipset="${s.id}">PNG · ZIP</button>${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>`).join('');
+      <small>${esc(s.sub || '')}</small><div class="row"><button class="btn btn-blue btn-s" data-zipset="${s.id}">PNG · ZIP</button>${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>`).join('') +
+    (D.cardOptions ? `<div class="dl-row"><img loading="lazy" src="${D.cardOptions.options[0].front.img}" alt=""><div><b>Business card options</b><small>Print · ${D.cardOptions.options.length + 1} directions</small></div><small>Front and both backs for each</small>
+      <div class="row"><button class="btn btn-blue btn-s" data-optzip>PNG · ZIP</button>${(D.cardOptions.downloads || []).map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>` : '');
+  $('[data-optzip]', t)?.addEventListener('click', () => { const C = D.cardOptions; const all = [C.current, ...C.options];
+    zipFiles(all.flatMap(o => { const fr = o.front.png ? o.front : B[o.front.id], bs = o.backs.map(k => k.png ? k : B[k.id]); return [[`${o.letter}/${fr.name}.png`, fr.png], ...bs.map(k => [`${o.letter}/${k.name}.png`, k.png])]; }), 'Cosmic - Business card options'); });
+  $('[data-all="uniform"]', t).onclick = () => zipFiles(D.uniform.flatMap(g => g.files.flatMap(f => (f.variants || [f]).map(v => [`${g.key}/${v.file}`, v.href]))), 'Cosmic - Uniform vectors');
+  $('[data-all="badges"]', t).onclick = () => zipFiles(D.badges.map(a => [a.file, a.href]), 'Cosmic - Good Neighbor Club badges');
   $$('[data-zipset]', t).forEach(b => b.addEventListener('click', () => { const s = setOf(b.dataset.zipset); zipBoards(s.boards, `Cosmic - ${s.label}`); }));
   $('[data-all="social"]', t).onclick = () => zipBoards(social, 'Cosmic - Social designs');
   $('[data-all="print"]', t).onclick = () => zipBoards(setOf('print').boards, 'Cosmic - Print designs', false);
