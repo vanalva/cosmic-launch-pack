@@ -488,3 +488,15 @@ h4.caps { font-size: 22px; }
 body:has(#lightbox:not([hidden])) .toast { bottom: auto; top: 22px; transform: translate(-50%, -120px); z-index: 300; }
 body:has(#lightbox:not([hidden])) .toast.on { transform: translate(-50%, 0); }
 @media (max-width: 560px) { .vgrid, .badges { grid-template-columns: repeat(2, minmax(0, 1fr)); } .vc-im { padding: 8px; } }
+
+/* editables: pills wrap, package button, per-card rows */
+.btn-pack { background: var(--ink); border-color: var(--ink); color: var(--cream); padding: 15px 28px; }
+.btn-pack:hover { background: var(--blue); border-color: var(--blue); }
+.btn-pack small { font-size: inherit; opacity: .7; font-weight: 600; }
+.hero-btns { flex-wrap: wrap; }
+.dl-pack { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 20px; } .dl-pack p { margin: 0; color: var(--mute); max-width: 52ch; }
+.btn-s { white-space: normal; text-align: left; line-height: 1.2; }
+.pc-ed { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.um-dl-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+#umEd:empty { display: none; } #umEd { margin: 0 0 18px; }
+@media (max-width: 700px) { .btn-pack { white-space: normal; } .dl-pack { align-items: flex-start; } }

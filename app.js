@@ -54,6 +54,22 @@ async function zipFiles(entries, name, extra) {
   saveBlob(await z.generateAsync({ type: 'blob' }), fileName(name) + '.zip'); toast('Download ready');
 }
 const setOf = (id) => D.sets.find(s => s.id === id);
+/* editables: every place that offers a PNG also offers Canva + Illustrator + the full package.
+   ed = { canva: [{label, href}], ai, aiLabel, pkg, pkgSize }; one .ai holds the whole set as artboards */
+const unit = (s) => s.kind === 'print' ? 'pieces' : 'designs';
+const aiLabelOf = (s) => s.boards.length > 1 ? `Illustrator · ${s.label.toLowerCase()} set (all ${s.boards.length} ${unit(s)})` : `Illustrator · ${s.label.toLowerCase()}`;
+const edOf = (b) => { if (!b || b.nodl || !b.ai) return null; const s = setOf(b.set);
+  return { canva: b.canva ? [{ label: 'Canva', href: b.canva }] : [], ai: b.ai, aiLabel: aiLabelOf(s), pkg: b.package, pkgSize: s.packageSize }; };
+const canvaOf = (list) => list.filter(d => d.kind === 'canva').map(d => ({ label: d.label.replace('Canva template', 'Canva'), href: d.href }));
+const edSet = (s) => s.nodl ? null : ({ canva: canvaOf(s.downloads), ai: s.ai, aiLabel: aiLabelOf(s), pkg: s.package, pkgSize: s.packageSize });
+function edHtml(ed, o = {}) {
+  if (!ed || DEMO) return '';
+  const cls = o.cls || 'btn btn-line btn-s', ext = 'target="_blank" rel="noopener"';
+  return ed.canva.map(c => `<a class="${cls}" data-ed="canva" href="${c.href}" download>${esc(c.label)}</a>`).join('')
+    + (ed.ai ? `<a class="${cls}" data-ed="ai" href="${ed.ai}" ${ext}${o.short ? ` title="${esc(ed.aiLabel)}"` : ''}>${esc(o.short ? 'Illustrator' : ed.aiLabel)}</a>` : '')
+    + (ed.pkg ? `<a class="${cls}" data-ed="pkg" href="${ed.pkg}" ${ext}>Full package${ed.pkgSize ? ' · ' + esc(ed.pkgSize) : ''}</a>` : '');
+}
+const packLabel = () => `Download the complete pack${D.fullPackageSize ? ` <small>· ${esc(D.fullPackageSize)}</small>` : ''}`;
 const isStory = (b) => b.h >= 1900 && b.w < 1200;
 const avatar = () => B['profile/01-comet']?.img || '';
 const handle = 'cosmic';
@@ -115,6 +131,7 @@ function hero() {
   const fan = ['meet-arlo/01-cover', 'reveal/01-post', 'what-we-do/01-cover'].filter(id => B[id]);
   $('#fan').innerHTML = fan.map(id => `<button aria-label="Open ${esc(B[id].title)}"><img src="${B[id].img}" alt="${esc(B[id].alt)}"></button>`).join('');
   $$('#fan button').forEach((b, k) => b.addEventListener('click', () => openBoard(fan[k])));
+  const hp = $('#heroPack'); if (hp) { hp.href = D.fullPackage; hp.target = '_blank'; hp.rel = 'noopener'; hp.innerHTML = packLabel(); hp.hidden = DEMO; }
   $('#heroStats').innerHTML = [[s.boards, 'designs'], [s.sets, 'sets'], [s.social, 'social posts'], [s.teaserShare + '%', 'teaser'], [s.print, 'print'], [D.mockups.length, 'mockups']]
     .map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
 }
@@ -212,7 +229,7 @@ function openPost(ids, start = 0) {
         ${cap ? `<button class="btn btn-line btn-s" data-copy>Copy caption</button>` : ''}
         ${s.nodl ? '' : `<a class="btn btn-blue btn-s" href="${b.png}" download="${esc(b.name)}.png">Download this ${isStory(b) ? 'story' : 'design'} · PNG ${b.w}×${b.h}</a>
         ${ids.length > 1 ? `<button class="btn btn-line btn-s" data-zip>All ${ids.length} slides · ZIP</button>` : ''}`}
-        ${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}
+        ${edHtml(edOf(b))}
       </div>`;
     $('[data-copy]', m)?.addEventListener('click', () => copy(`${cap}\n\n${tags}`.trim(), 'Caption copied'));
     $('[data-zip]', m)?.addEventListener('click', () => zipBoards(ids, `Cosmic - ${s.label}`));
@@ -267,7 +284,7 @@ function renderLib() {
     const html = sets.map(s => { const ids = s.boards.filter(match); if (!ids.length) return '';
       const hg = s.kind === 'banners' ? 210 : s.kind === 'email' ? 520 : s.kind === 'print' ? 300 : 330;
       return `<div class="lib-set"><div class="lib-set-head"><div><p class="label">${esc(s.channel)} · ${ids.length} design${ids.length > 1 ? 's' : ''}</p><h3 class="caps">${esc(s.label)}</h3>${s.intro || s.sub ? `<p>${esc(s.intro || s.sub)}</p>` : ''}</div>
-        ${s.nodl ? '' : `<div class="meta"><button class="btn btn-blue btn-s" data-zipset="${s.id}">Download set · ZIP</button>${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div>`}</div>
+        ${s.nodl ? '' : `<div class="meta"><button class="btn btn-blue btn-s" data-zipset="${s.id}">Download set · ZIP</button>${edHtml(edSet(s))}</div>`}</div>
         <div class="strip">${ids.map(id => cardHtml(id, hg)).join('')}</div></div>`; }).join('');
     body.innerHTML = html || '<p class="empty">Nothing matches that search.</p>';
   }
@@ -407,17 +424,18 @@ function printSec() {
   groups.forEach(ids => ids.sort((x, y) => side(x) - side(y) || x.localeCompare(y)));
   const faceLabel = id => { const mm = B[id].name.match(/-(front|back)(?:-(\w+))?$/); return mm ? (mm[1] === 'front' ? 'Front' : 'Back') + (mm[2] ? ' · ' + mm[2][0].toUpperCase() + mm[2].slice(1) : '') : 'Side'; };
   const G = [...groups.values()], T = [...groups.keys()].map(k => NAMES[k] || [k, '']);
-  const pItems = G.map((ids, g) => ({ title: T[g][0], line: T[g][1], src: big(B[ids[0]]), w: B[ids[0]].w, h: B[ids[0]].h, dl: dlOf(B[ids[0]]), faces: ids.length > 1 ? ids.map(id => ({ label: faceLabel(id), src: big(B[id]), dl: dlOf(B[id]) })) : null }));
+  const pItems = G.map((ids, g) => ({ title: T[g][0], line: T[g][1], src: big(B[ids[0]]), w: B[ids[0]].w, h: B[ids[0]].h, dl: dlOf(B[ids[0]]), ed: edOf(B[ids[0]]), faces: ids.length > 1 ? ids.map(id => ({ label: faceLabel(id), src: big(B[id]), dl: dlOf(B[id]), ed: edOf(B[id]) })) : null }));
   $('#printGrid').innerHTML = [...groups].map(([k, ids], g) => { const [t, sz] = NAMES[k] || [k, '']; const f = B[ids[0]];
     return `<div class="pc-wrap"><button class="pc" data-g="${g}"><div class="pc-in"><div class="pc-face pc-front"><img loading="lazy" src="${f.img}" alt="${esc(t)}"></div>${ids.length > 1 ? `<div class="pc-face pc-back"><img alt=""></div>` : ''}</div>
       <div class="pc-meta"><b>${esc(t)}</b><span>${esc(sz)}</span></div>${ids.length > 1 ? `<div class="pc-hint">Click to flip · ${ids.length} sides</div>` : '<div class="pc-hint">Click to enlarge</div>'}</button>
-      ${ids.length > 1 ? `<button class="zoom" data-z="${g}" aria-label="Enlarge ${esc(t)}, front and back">⤢</button>` : ''}</div>`; }).join('');
+      ${ids.length > 1 ? `<button class="zoom" data-z="${g}" aria-label="Enlarge ${esc(t)}, front and back">⤢</button>` : ''}
+      <div class="pc-ed">${edHtml(edOf(f), { short: true })}</div></div>`; }).join('');
   $$('#printGrid .zoom').forEach(z => z.addEventListener('click', () => lightbox(pItems, +z.dataset.z, z)));
   $$('#printGrid .pc').forEach(btn => { const ids = G[+btn.dataset.g]; if (ids.length < 2) { btn.onclick = () => lightbox(pItems, +btn.dataset.g, btn); return; }
     let i = 0, flipped = false; const front = $('.pc-front img', btn), back = $('.pc-back img', btn);
     const fit = () => { const b = B[ids[0]]; $('.pc-in', btn).style.aspectRatio = `${b.w} / ${b.h}`; }; fit();
     btn.onclick = () => { if (touchOnly()) return lightbox(pItems, +btn.dataset.g, btn); const nx = (i + 1) % ids.length; (flipped ? front : back).src = B[ids[nx]].img; flipped = !flipped; btn.classList.toggle('flip', flipped); i = nx; }; });
-  const pd = $('#printDl'); if (pd) { pd.innerHTML = `<button class="btn btn-blue btn-s" data-pz>All print pieces · PNG ZIP (${P.boards.length})</button>${P.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}`;
+  const pd = $('#printDl'); if (pd) { pd.innerHTML = `<button class="btn btn-blue btn-s" data-pz>All print pieces · PNG ZIP (${P.boards.length})</button>${edHtml(edSet(P))}`;
     $('[data-pz]', pd).onclick = () => zipBoards(P.boards, 'Cosmic - Print', false); }
   cardOptions();
 }
@@ -427,10 +445,12 @@ function cardOptions() {
   const C = D.cardOptions, root = $('#cardOptions'); if (!C || !root) return;
   const cur = C.current, bd = id => B[id];
   const all = [{ ...cur, front: { img: bd(cur.front.id).img, w: bd(cur.front.id).w, h: bd(cur.front.id).h, png: bd(cur.front.id).png, name: bd(cur.front.id).name }, backs: cur.backs.map(k => ({ label: k.label, img: bd(k.id).img, png: bd(k.id).png, name: bd(k.id).name })) }, ...C.options];
+  const edC = { canva: canvaOf(C.downloads || []), ai: C.ai, aiLabel: `Illustrator · card options set (all ${C.options.length} directions)`, pkg: C.package, pkgSize: C.packageSize };
+  const edO = o => o.ai ? { canva: o.canva ? [{ label: 'Canva', href: o.canva }] : [], ai: o.ai, aiLabel: edC.aiLabel, pkg: o.package, pkgSize: C.packageSize } : edOf(bd(cur.front.id));
   const optZip = all.flatMap(o => [[`${o.letter}/${o.front.name}.png`, o.front.png], ...o.backs.map(k => [`${o.letter}/${k.name}.png`, k.png])]);
   root.innerHTML = `<div class="co-head"><p class="label">Business card options</p><h3 class="caps">More ways to hand over a name</h3>
     <p class="lead">The current card, then ${C.options.length} directions to compare. Click a card to flip it; on hover the expand icon opens a big preview (on touch, tap a card). The toggle switches the back between Carlos and Roberto.</p>
-    <div class="co-top"><button class="btn btn-blue btn-s" id="coZip">All card options · PNG ZIP (${optZip.length})</button>${(C.downloads || []).map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>
+    <div class="co-top"><button class="btn btn-blue btn-s" id="coZip">All card options · PNG ZIP (${optZip.length})</button>${edHtml(edC)}</div></div>
     <div class="co-grid">${all.map((o, n) => { const tall = o.front.h > o.front.w;
       return `<article class="co${n === 0 ? ' co-cur' : ''}" data-n="${n}"><div class="co-media"><button class="pc co-flip${tall ? ' tall' : ''}" style="aspect-ratio:${o.front.w} / ${o.front.h}" aria-label="Flip ${esc(o.name)}"><div class="pc-in">
         <div class="pc-face pc-front"><img loading="lazy" src="${o.front.img}" alt="${esc(o.name)}, front"></div><div class="pc-face pc-back"><img loading="lazy" src="${o.backs[0].img}" alt="${esc(o.name)}, back"></div></div></button>
@@ -438,9 +458,9 @@ function cardOptions() {
         <div class="pc-meta"><b>${n === 0 ? 'Current' : esc(o.letter) + ' · ' + esc(o.name)}</b><span>${esc(o.size)}</span></div>
         <p class="co-note">${esc(o.note)}</p>
         <div class="seg seg-s" role="group" aria-label="Back">${o.backs.map((k, i) => `<button class="seg-btn${i ? '' : ' on'}" data-b="${i}">${esc(k.label)}</button>`).join('')}</div>
-        <div class="co-dl"><a class="btn btn-line btn-s" data-df href="${o.front.png}" download="${esc(o.front.name)}.png">Front · PNG</a><a class="btn btn-line btn-s" data-db href="${o.backs[0].png}" download="${esc(o.backs[0].name)}.png">Back · ${esc(o.backs[0].label)} · PNG</a></div></article>`; }).join('')}</div>`;
+        <div class="co-dl"><a class="btn btn-line btn-s" data-df href="${o.front.png}" download="${esc(o.front.name)}.png">Front · PNG</a><a class="btn btn-line btn-s" data-db href="${o.backs[0].png}" download="${esc(o.backs[0].name)}.png">Back · ${esc(o.backs[0].label)} · PNG</a>${edHtml(edO(o), { short: true })}</div></article>`; }).join('')}</div>`;
   const pdl = k => ({ href: k.png, name: `${k.name}.png`, label: 'PNG' });
-  const cItems = all.map((o, n) => ({ title: n === 0 ? 'Current business card' : `${o.letter} · ${o.name}`, line: o.note, src: o.front.png, w: o.front.w, h: o.front.h, dl: pdl(o.front),
+  const cItems = all.map((o, n) => ({ title: n === 0 ? 'Current business card' : `${o.letter} · ${o.name}`, line: o.note, src: o.front.png, w: o.front.w, h: o.front.h, dl: pdl(o.front), ed: edO(o),
     faces: [{ label: 'Front', src: o.front.png, dl: pdl(o.front) }, ...o.backs.map(k => ({ label: 'Back · ' + k.label, src: k.png, dl: pdl(k) }))] }));
   $('#coZip', root).onclick = () => zipFiles(optZip, 'Cosmic - Business card options');
   $$('.co .zoom', root).forEach(z => z.addEventListener('click', () => lightbox(cItems, +z.dataset.n, z)));
@@ -457,7 +477,7 @@ function rebrand() {
     <div class="mail-head"><p class="label">Subject</p><b>${esc(S.email.subject)}</b><p class="label">Preheader</p><p>${esc(S.email.preheader)}</p>
       <small>From Cosmic · To: customers · [TBC: LAUNCH DATE]</small></div>
     <div class="mail-body" tabindex="0" aria-label="Email, scroll to read"><img src="${em.img}" alt="${esc(em.alt)}" width="${em.w}" height="${em.h}"></div>`;
-  const mailOpen = () => lightbox([{ title: 'Announcement email', line: `Subject: ${S.email.subject}`, src: big(em), w: em.w, h: em.h, scroll: true, dl: dlOf(em) }], 0, $('#mailZoom'));
+  const mailOpen = () => lightbox([{ title: 'Announcement email', line: `Subject: ${S.email.subject}`, src: big(em), w: em.w, h: em.h, scroll: true, dl: dlOf(em), ed: edOf(em) }], 0, $('#mailZoom'));
   $('#mailZoom').onclick = mailOpen; const mi = $('#rbMail .mail-body img'); mi.style.cursor = 'zoom-in'; mi.onclick = mailOpen;
   $('#rbCars').innerHTML = S.carousels.map(k => { const ids = S.boards.filter(id => B[id].group === k.key), b0 = B[ids[0]];
     return `<article class="rb-car" data-k="${k.key}"><div class="rb-car-media"><div class="rb-track">${ids.map((id, i) => `<button data-i="${i}" aria-label="Open slide ${i + 1} of ${ids.length}"><img loading="lazy" src="${B[id].img}" alt="${esc(B[id].alt)}"></button>`).join('')}</div>
@@ -478,12 +498,13 @@ function rebrand() {
 }
 
 /* ── uniform & patches: seven boards, the patch sheet first and widest ── */
-const merchItem = id => ({ title: B[id].title, line: B[id].line, src: big(B[id]), w: B[id].w, h: B[id].h, dl: dlOf(B[id]) });
+const merchItem = id => ({ title: B[id].title, line: B[id].line, src: big(B[id]), w: B[id].w, h: B[id].h, dl: dlOf(B[id]), ed: edOf(B[id]) });
 function uniform() {
   const S = setOf('merch'); if (!S) return;
   $('#umGrid').innerHTML = S.boards.map((id, i) => { const b = B[id];
     return `<button class="um${i ? '' : ' um-wide'}" data-i="${i}" aria-label="Open ${esc(b.title)} full size"><span class="um-im"><img loading="lazy" src="${b.img}" alt="${esc(b.alt)}" width="${b.w}" height="${b.h}"></span>
       <span class="um-meta"><b>${esc(b.title)}</b><span>${esc(b.line)}</span></span></button>`; }).join('');
+  const ue = $('#umEd'); if (ue) ue.innerHTML = edHtml(edSet(S));
   $$('#umGrid .um').forEach(b => b.addEventListener('click', () => lightbox(S.boards.map(merchItem), +b.dataset.i, b)));
   uniformDl();
 }
@@ -493,7 +514,7 @@ function uniformDl() {
   const vars = f => (f.variants || [{ colour: '', href: f.href, file: f.file, ar: f.ar }]).map(v => ({ ...v, name: v.file.replace(/\.svg$/, ''), label: f.label + (v.colour ? ' · ' + v.colour : '') }));
   const all = U.flatMap(g => g.files.flatMap(f => vars(f).map(v => [`${g.key}/${v.file}`, v.href])));
   host.innerHTML = `<div class="um-dl-head"><div><p class="label">Vector files</p><h3 class="caps">Download the artwork</h3><p>Every file is a clean SVG: patches, the chest block, the painting lockup, the garment flats and the layouts. Open one for a big preview, copy it to paste into Figma, Illustrator or Canva, or take the lot.</p></div>
-    <button class="btn btn-blue" id="umZip">All uniform vectors · ZIP (${all.length})</button></div>` +
+    <div class="um-dl-btns"><button class="btn btn-blue" id="umZip">All uniform vectors · ZIP (${all.length})</button>${edHtml(edSet(setOf('merch')))}</div></div>` +
     U.map((g, gi) => { let n = 0; return `<div class="vg"><div class="vg-head"><h4 class="caps">${esc(g.title)}</h4><p>${esc(g.note)}</p></div><div class="vgrid">` + g.files.map(f => { const vs = vars(f), at = n; n += vs.length;
       return `<div class="vc"><button class="vc-im" data-g="${gi}" data-k="${at}" style="background:${groundOf(vs[0].name)}" aria-label="Preview ${esc(f.label)}"><img loading="lazy" src="${vs[0].href}" alt="${esc(f.label)}"></button><b>${esc(f.label)}</b>
         <div class="vc-acts">${vs.map(v => `<span class="vv"><a class="btn btn-line btn-s" href="${v.href}" download="${esc(v.file)}">${v.colour ? esc(v.colour) + ' SVG' : 'SVG'} ↓</a><button class="btn btn-s vcopy" data-href="${v.href}">${v.colour ? 'Copy ' + esc(v.colour) : 'Copy SVG'}</button></span>`).join('')}</div></div>`; }).join('') + `</div></div>`; }).join('');
@@ -511,7 +532,7 @@ function mockups() {
 /* ── the one shared lightbox: raster or SVG art, faces (front/back), scroll mode, keys, swipe, focus trap ── */
 const big = b => (!b.nodl && b.w > 1100 ? b.png : b.img); // wide boards preview from the full PNG
 const dlOf = b => b.nodl ? null : { href: b.png, name: `${b.name}.png`, label: 'PNG' };
-const boardItem = id => { const b = B[id]; return { title: b.title, line: setOf(b.set).label, src: big(b), w: b.w, h: b.h, dl: dlOf(b) }; };
+const boardItem = id => { const b = B[id]; return { title: b.title, line: setOf(b.set).label, src: big(b), w: b.w, h: b.h, dl: dlOf(b), ed: edOf(b) }; };
 const artItem = (a, colour, ground, title, line) => ({ title, line, art: { src: a.src, colour, mono: a.mono, ar: a.ar || 1, name: a.name, label: title }, ground: COL[ground] || ground });
 let lbTok = 0;
 const touchOnly = () => matchMedia('(hover: none)').matches;
@@ -549,7 +570,8 @@ async function lightbox(items, i, opener) {
     } else {
       const d = it.faces ? (it.faces[face].dl || it.dl) : it.dl;
       const nm = d && it.faces ? d.name.replace(/(\.\w+)$/, '') : '';
-      box.innerHTML = d ? `<a class="btn btn-cream btn-s" href="${d.href}" download="${esc(d.name)}">Download ${d.label || 'PNG'}${it.faces ? ' · ' + esc(it.faces[face].label) : ''}</a>` : '';
+      const ed = (it.faces && it.faces[face].ed) || it.ed;
+      box.innerHTML = (d ? `<a class="btn btn-cream btn-s" href="${d.href}" download="${esc(d.name)}">Download ${d.label || 'PNG'}${it.faces ? ' · ' + esc(it.faces[face].label) : ''}</a>` : '') + edHtml(ed);
     }
   }
   const rs = () => { const it = items[i]; fit(it, it.w, it.h, it.art?.ar); };
@@ -564,16 +586,16 @@ async function lightbox(items, i, opener) {
 function downloads() {
   const social = D.sets.filter(s => ['feed-singles', 'carousel', 'mixed', 'stories', 'highlights', 'avatars'].includes(s.kind)).flatMap(s => s.boards);
   const t = $('#dlTable');
-  t.innerHTML = `<div class="dl-all"><button class="btn btn-blue" data-all="social">All social designs · ZIP (${social.length})</button>
+  t.innerHTML = `<div class="dl-pack"><a class="btn btn-blue btn-pack" id="dlPack" href="${D.fullPackage}" target="_blank" rel="noopener">${packLabel()}</a><p>Everything in one zip: every PNG, the Canva templates and the Illustrator files.</p></div><div class="dl-all"><button class="btn btn-blue" data-all="social">All social designs · ZIP (${social.length})</button>
     <button class="btn btn-line" data-all="print">All print designs · ZIP (${setOf('print').boards.length})</button>
     <button class="btn btn-line" data-all="icons">Icon kit · SVG ZIP (${D.brand.icons.length})</button>
     <button class="btn btn-line" data-all="uniform">Uniform vectors · SVG ZIP</button>
     <button class="btn btn-line" data-all="badges">Club badges · SVG ZIP</button>
     <a class="btn btn-line" href="${D.repo}/releases/tag/v2" target="_blank" rel="noopener">All Illustrator files</a></div>` +
     D.sets.filter(s => !s.nodl).map(s => `<div class="dl-row"><img loading="lazy" src="${B[s.boards[0]].img}" alt=""><div><b>${esc(s.label)}</b><small>${esc(s.channel)} · ${s.boards.length} design${s.boards.length > 1 ? 's' : ''}</small></div>
-      <small>${esc(s.sub || '')}</small><div class="row"><button class="btn btn-blue btn-s" data-zipset="${s.id}">PNG · ZIP</button>${s.downloads.map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>`).join('') +
+      <small>${esc(s.sub || '')}</small><div class="row"><button class="btn btn-blue btn-s" data-zipset="${s.id}">PNG · ZIP</button>${edHtml(edSet(s))}</div></div>`).join('') +
     (D.cardOptions ? `<div class="dl-row"><img loading="lazy" src="${D.cardOptions.options[0].front.img}" alt=""><div><b>Business card options</b><small>Print · ${D.cardOptions.options.length + 1} directions</small></div><small>Front and both backs for each</small>
-      <div class="row"><button class="btn btn-blue btn-s" data-optzip>PNG · ZIP</button>${(D.cardOptions.downloads || []).map(d => `<a class="btn btn-line btn-s" href="${d.href}" ${d.kind === 'canva' ? 'download' : 'target="_blank" rel="noopener"'}>${esc(d.label)}</a>`).join('')}</div></div>` : '');
+      <div class="row"><button class="btn btn-blue btn-s" data-optzip>PNG · ZIP</button>${edHtml({ canva: canvaOf(D.cardOptions.downloads), ai: D.cardOptions.ai, aiLabel: `Illustrator · card options set (all ${D.cardOptions.options.length} directions)`, pkg: D.cardOptions.package, pkgSize: D.cardOptions.packageSize })}</div></div>` : '');
   $('[data-optzip]', t)?.addEventListener('click', () => { const C = D.cardOptions; const all = [C.current, ...C.options];
     zipFiles(all.flatMap(o => { const fr = o.front.png ? o.front : B[o.front.id], bs = o.backs.map(k => k.png ? k : B[k.id]); return [[`${o.letter}/${fr.name}.png`, fr.png], ...bs.map(k => [`${o.letter}/${k.name}.png`, k.png])]; }), 'Cosmic - Business card options'); });
   $('[data-all="uniform"]', t).onclick = () => zipFiles(D.uniform.flatMap(g => g.files.flatMap(f => (f.variants || [f]).map(v => [`${g.key}/${v.file}`, v.href]))), 'Cosmic - Uniform vectors');
